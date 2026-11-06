@@ -8,11 +8,14 @@ only; the gravity component of the vehicle's tilt is left out of f (it is small
 next to the manoeuvre forces and keeps the scenarios easy to read).
 
 Usage: scenarios.py            # list scenarios with their peak values
+       scenarios.py --export   # write sim/data/<name>.csv for the Renode tests
+       scenarios.py --check    # fail if those files are stale (CI)
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -120,13 +123,59 @@ def excessive() -> Scenario:
 ALL = [launch, braking, lane_change, cornering, bump, excessive]
 
 
+def surge_step() -> Scenario:
+    """IT03: a pure 3 m/s^2 surge step for 8 s (0.3 s onset), no body rotation, so the
+    platform pitch is tilt coordination alone (P04 is a limit on the tilt rate)."""
+    t, f, w = _base(16.0)
+    f[:, 0] = 3.0 * pulse(t, 1.0, 9.0, 0.3)
+    return Scenario("surge_step", "Surge step: 3 m/s² for 8 s", t, f, w,
+                    "the launch without its body pitch: tilt coordination alone")
+
+
+# Streamed by the Renode tests (sim/data): the six tuning scenarios plus the IT03 step.
+EXPORT = ALL + [surge_step]
+
+
 def upsample(t: np.ndarray, x: np.ndarray, rate_hz: float) -> tuple[np.ndarray, np.ndarray]:
     """Linear interpolation from 100 Hz to the cueing rate (as the controller does, F09)."""
     t2 = np.arange(t[0], t[-1], 1.0 / rate_hz)
     return t2, np.column_stack([np.interp(t2, t, x[:, a]) for a in range(x.shape[1])])
 
 
+EXPORT_DIR = Path(__file__).resolve().parents[2] / "sim" / "data"
+
+
+def render_csv(s: Scenario) -> str:
+    """t,fx,fy,fz,wx,wy,wz at 100 Hz: what the Renode host stand-in streams."""
+    rows = ["t,fx,fy,fz,wx,wy,wz"]
+    for k in range(len(s.t)):
+        rows.append(",".join([f"{s.t[k]:.2f}"] + [f"{v:.6f}" for v in (*s.f[k], *s.w[k])]))
+    return "\n".join(rows) + "\n"
+
+
+def export(check: bool) -> int:
+    stale = []
+    for make in EXPORT:
+        s = make()
+        path = EXPORT_DIR / f"{s.name}.csv"
+        text = render_csv(s)
+        if check:
+            if not path.exists() or path.read_text() != text:
+                stale.append(path.name)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            print(f"wrote sim/data/{path.name} ({len(s.t)} samples)")
+    if check:
+        print(f"sim/data out of date: {stale}" if stale else "sim/data scenarios are up to date")
+    return 1 if stale else 0
+
+
 def main() -> int:
+    import sys
+
+    if "--export" in sys.argv or "--check" in sys.argv:
+        return export("--check" in sys.argv)
     for make in ALL:
         s = make()
         print(f"{s.name:12s} {s.t[-1] + 1 / RATE_HZ:5.1f} s  max|f-g| "

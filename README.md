@@ -2,17 +2,36 @@
 
 Embedded controller for a 6-DOF electric motion platform (a Stewart platform) of the kind under vehicle and crew simulators. It covers motion cueing (classical washout), platform kinematics, workspace limiting, six servo loops and the safety states. It is written in C for Zephyr on an emulated STM32H753 in Renode. Design and requirements are in [SPEC.md](SPEC.md).
 
-**Status: week 2 of 4 (motion cueing).** The portable library `mcue` now does the following:
+**Status: week 3 of 4 (firmware).** The portable library `mcue` now covers:
 - **Kinematics (week 1):** inverse kinematics, analytic Jacobian, forward kinematics (Newton–Raphson), statics, and workspace limiting by scaling the whole pose.
 - **Cueing (week 2):** classical washout (Tustin biquads, tilt coordination limited in rate and acceleration, rotational channel), and leg shaping (a second-order speed/acceleration limiter that never passes the soft limits), with S-curves for engage/park.
+- **Control (week 3):** the actuator model (ball screw with friction, end stops, encoder, and the payload's gravity load from the statics); cascaded leg servos with feed-forward; and the controller core: the safety state machine, setpoints, and fault monitors.
 
-An offline closed loop runs the C library on six vehicle scenarios and measures the cue the platform actually delivers. Tuning on it changed two parameters, added one (the tilt acceleration limit) and exposed six defects; each was fixed and now has a regression test (SPEC §6.3a). The firmware with servo loops and Renode tests comes in week 3, and the host tools in week 4.
+The **firmware** (`app/`, Zephyr on the emulated STM32H753 in Renode) runs two loops:
+- a 1 kHz servo loop;
+- a 500 Hz cueing loop, which talks to the host over a DBC-defined CAN protocol.
+
+Eight Renode integration tests drive it over CAN and check what it sends back: boot, engage, washout, tracking, saturation, E-stop, heartbeat loss and a seized leg. The host tools and the 3D view come in week 4.
+
+An offline closed loop runs the C library on six vehicle scenarios and measures the cue the platform actually delivers. Tuning on it changed two parameters, added one (the tilt acceleration limit) and exposed six defects. Each was fixed and now has a regression test (SPEC §6.3a). Week 3 found four more, each fixed with a test (SPEC §6.4, §6.6):
+- the servo overshot raw steps;
+- a seized leg was pushed at full current;
+- after RESET, the controller faulted again on a stale trip;
+- the measured legs passed the soft limit by 10 µm.
 
 ## Results so far
 
 | Check | Result |
 |---|---|
-| Unit tests (ztest on `native_sim`) | 36 of 36 pass, no warnings |
+| Unit tests (ztest on `native_sim`) | 61 of 61 pass, no warnings |
+| Renode integration tests IT01–IT08 (firmware over CAN) | 8 of 8 pass (SPEC §9.2) |
+| Leg tracking in the firmware, lane change (IT04) | 0.5 µm RMS, 5.5 µm peak (limit 1 mm / 3 mm) |
+| E-stop while moving (IT06) | standstill 44 ms after the button, descent at 0.050 m/s |
+| Seized leg during ENGAGING (IT08) | following-error fault on that leg 122 ms after it seized; the others descend |
+| Heartbeat loss (IT07) | COMMS_LOST 201 ms after the last sample, washout to neutral, park |
+| Loop timing in Renode (virtual time) | servo worst 127 µs of 1000, cueing worst 581 µs of 2000, zero overruns |
+| CAN payloads vs `protocol/motion.dbc` | every frame type identical byte for byte (cantools vectors) |
+| Servo, 10 mm step under the full load | 0 % overshoot, settled in 61 ms |
 | IK, statics and workspace against the NumPy reference vectors | exact to 1e-12 m / 1e-6 N |
 | FK round trip, 1000 random poses, cold start / warm start | ≤ 1e-9, worst case 6 / 3 iterations |
 | Workspace property test: 10,000 random commands up to ~2× the workspace | no leg ever outside its soft limits; output always the command scaled towards neutral |
@@ -45,6 +64,36 @@ The lane change scores worse than not moving, and no tuning changes that. At 0.3
 
 Plots for all six scenarios are in [results/plots/](results/plots/).
 
+## Firmware (week 3)
+
+```
+ CAN 0x100/0x101 VEHICLE_F/W 100 Hz ──► cue thread 500 Hz ───────────────────────────────┐
+ CAN 0x10F CMD ──► host thread ──► mcue/ctl: E-stop, heartbeat, faults, states,         │
+                                   washout → workspace → IK → leg shaping, FK, statics   │ setpoints
+ CAN 0x180-0x18F ◄── host thread 50 Hz: STATUS, POSE, LEG_POS/CUR, FAULT, TIMING          ▼
+                                   servo thread 1 kHz: 6 × (P position → PI velocity → current
+                                   + feed-forward), following-error / current monitors
+                                                 │ act_write / act_read (HAL)
+                                                 ▼
+                                   act_sim.c: six ball-screw actuator models, gravity load
+```
+
+The controller core (`mcue/ctl`) is plain C. The firmware threads, the unit tests (against six actuator models) and the host build all run the same code.
+
+**States:**
+- OFF → HOMING → PARKED → ENGAGING (3 s S-curve) → ENGAGED (cueing) → PARKING → PARKED.
+- Every fault and the E-stop stop the legs at the acceleration limit, stand still for 0.25 s, then descend to park at ≤ 0.05 m/s.
+
+**Faults** (SPEC §6.6):
+- following error > 5 mm for 50 ms;
+- current saturated for 500 ms;
+- a leg past its hard limit;
+- loop overruns;
+- an implausible encoder;
+- the task watchdog.
+
+**Renode tests.** For the tests, `sim/host_feed.py` stands in for the host inside Renode. It streams the vehicle on virtual time and records every frame the controller sends, so the tests are repeatable. `tests/robot/motionlib.py` decodes those frames with the DBC layouts and checks them against the requirements.
+
 ## Reference geometry
 
 The geometry lives in `config/platform.json`. It is the single source of truth for the C header and the test vectors.
@@ -60,7 +109,12 @@ The 30° platform half-angle was chosen by comparing workspace and Jacobian cond
 ```bash
 bash scripts/test-unit.sh     # ztest unit tests on native_sim
 bash scripts/crosscheck.sh    # headers current + C vs NumPy (kinematics) and SciPy (washout)
+bash scripts/build.sh         # firmware for stm32h7_renode_reference_board
+bash scripts/test-sim.sh      # Robot Framework tests IT01-IT08 in Renode (about 2 min)
+python3 protocol/gen_vectors.py   # after changing protocol/motion.dbc
 ```
+
+Firmware shell (UART): `motion status|legs|pose|params|fault|plant|timing|track|can|version`, `motion cmd enable|engage|park|reset`, `motion set|get <key> [value]`, `motion seize <leg> <0|1>`.
 
 ```bash
 cd tools/reference
@@ -68,6 +122,7 @@ python3 closed_loop.py                     # all scenarios → results/closed_lo
 python3 closed_loop.py --set force_gain=0.6 --no-plots   # try a parameter (prints only)
 python3 tune.py                            # grid search of the washout parameters (~7 min)
 python3 scenarios.py                       # list the scenarios
+python3 scenarios.py --export              # write sim/data/*.csv for the Renode tests
 python3 gen_headers.py                     # after changing config/platform.json
 python3 geometry_check.py --compare 10 20 30 40
 ```
@@ -75,10 +130,14 @@ python3 geometry_check.py --compare 10 20 30 40
 ## Layout
 
 ```
-config/platform.json    geometry, payload, limits, washout (single source of truth)
+config/platform.json    geometry, payload, limits, washout, actuator, servo, safety (single source of truth)
 mcue/                   portable C library: include/mcue/*.h, src/*.c, generated platform_config.h
-tests/unit/             ztest suites (linalg, kin, workspace, filters, washout, shaping) + generated vectors
+app/                    Zephyr firmware: motion threads, actuator HAL (simulation), CAN, host reports, shell
+protocol/               motion.dbc (source of truth for the CAN layout) and the test-vector generator
+sim/                    Renode board and machine script, host stand-in (host_feed.py), scenario CSVs
+tests/unit/             ztest suites (linalg, kin, workspace, filters, washout, shaping, servo, ctl, proto)
+tests/robot/            Robot Framework tests IT01-IT08 and the CAN log analysis (motionlib.py)
 tools/reference/        NumPy/SciPy references, ctypes bindings, scenarios, closed loop, tuning, header generator
 results/                closed-loop table and plots (generated by closed_loop.py)
-scripts/                test and cross-check helpers (bind-mount the repo in WSL: path has a space)
+scripts/                build, test and cross-check helpers (bind-mount the repo in WSL: path has a space)
 ```

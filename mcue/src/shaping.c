@@ -89,3 +89,47 @@ double mc_scurve(double t, double T)
 
 	return u * u * u * (10.0 + (u * (-15.0 + (6.0 * u))));
 }
+
+double mc_limit2_stop_point(double pos, double vel, const mc_limit2_params *lp)
+{
+	double d = stop_distance(vel, lp->a_max, lp->dt);
+	double p = pos + ((vel >= 0.0) ? d : -d);
+
+	return fmax(lp->lo, fmin(lp->hi, p));
+}
+
+void mc_traj_init(mc_leg_traj *tr, const double start[MC_LEGS], const double end[MC_LEGS],
+		  double t_min, double v_max, double a_max, double dt)
+{
+	double d = 0.0;
+
+	for (int i = 0; i < MC_LEGS; i++) {
+		tr->start[i] = start[i];
+		tr->end[i] = end[i];
+		d = fmax(d, fabs(end[i] - start[i]));
+	}
+	tr->T = fmax(t_min, fmax((1.875 * d) / v_max, sqrt((5.7735026919 * d) / a_max)));
+	tr->t = 0.0;
+	tr->dt = dt;
+}
+
+bool mc_traj_step(mc_leg_traj *tr, double pos[MC_LEGS], double vel[MC_LEGS],
+		  double acc[MC_LEGS])
+{
+	tr->t = fmin(tr->t + tr->dt, tr->T);
+
+	double T = tr->T;
+	double u = (T > 0.0) ? (tr->t / T) : 1.0;
+	double s = mc_scurve(tr->t, T);
+	double ds = (T > 0.0) ? ((30.0 * u * u * (1.0 - u) * (1.0 - u)) / T) : 0.0;
+	double dds = (T > 0.0) ? ((60.0 * u * (1.0 - u) * (1.0 - (2.0 * u))) / (T * T)) : 0.0;
+
+	for (int i = 0; i < MC_LEGS; i++) {
+		double d = tr->end[i] - tr->start[i];
+
+		pos[i] = tr->start[i] + (d * s);
+		vel[i] = d * ds;
+		acc[i] = d * dds;
+	}
+	return tr->t >= T;
+}

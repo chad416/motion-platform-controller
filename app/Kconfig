@@ -1,0 +1,12 @@
+menu "Motion platform"
+
+config MOTION_DEBUG_CMDS
+	bool "Fault-injection shell commands (seize a leg, stall a thread)"
+	default y
+	help
+	  Commands that deliberately break things to test the fault handling
+	  and the watchdog. Disable for field builds.
+
+endmenu
+
+source "Kconfig.zephyr"

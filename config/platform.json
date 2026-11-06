@@ -34,5 +34,38 @@
     "rot_gain": 0.7,
     "rot_wn": 1.0,
     "rot_zeta": 1.0
+  },
+  "actuator": {
+    "screw_lead_m": 0.010,
+    "screw_efficiency": 0.90,
+    "motor_kt_nm_a": 0.55,
+    "motor_inertia_kg_m2": 3.2e-4,
+    "viscous_nm_s_rad": 2.0e-4,
+    "coulomb_nm": 0.10,
+    "coulomb_smoothing_rad_s": 1.0,
+    "current_limit_a": 20.0,
+    "encoder_counts_rev": 131072,
+    "plant_substeps": 10
+  },
+  "servo": {
+    "rate_hz": 1000.0,
+    "position_bw_hz": 15.0,
+    "velocity_bw_hz": 60.0,
+    "velocity_integral_ratio": 0.2,
+    "position_brake_m_s2": 12.0
+  },
+  "safety": {
+    "engage_time_s": 3.0,
+    "park_time_s": 3.0,
+    "stop_dwell_s": 0.25,
+    "descent_speed_m_s": 0.05,
+    "hard_margin_m": 0.005,
+    "servo_margin_m": 0.0001,
+    "following_error_m": 0.005,
+    "following_error_time_s": 0.05,
+    "current_sat_time_s": 0.5,
+    "overrun_limit": 3,
+    "heartbeat_timeout_s": 0.2,
+    "comms_lost_return_s": 10.0
   }
 }

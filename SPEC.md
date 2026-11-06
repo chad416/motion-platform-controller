@@ -1,6 +1,6 @@
 # S2 — 6-DOF Motion Platform Controller
 
-Specification, revision A (6 Nov 2026)
+Specification, revision A (6 Nov 2026), with the week 2 and week 3 changes marked where they apply
 
 Embedded controller for a 6-DOF electric motion platform (a Stewart platform) of the kind used under vehicle and crew simulators. It does the following:
 - turns vehicle motion into platform motion (classical washout motion cueing),
@@ -78,7 +78,7 @@ A common semi-regular hexagon layout for a cabin of about 500 kg. All values sit
 | Leg speed limit | 0.5 m/s |
 | Leg acceleration limit | 6 m/s² |
 | Payload (cabin + crew) | 500 kg, centre of mass 0.3 m above the platform plane |
-| Actuator | electric, ball screw, 10 mm/rev lead, encoder 4096 counts/rev (0.0024 mm/count) |
+| Actuator | electric, ball screw, 10 mm/rev lead, 17-bit motor encoder (131 072 counts/rev, 0.076 µm per count; revision A had 4096, see §6.5) |
 
 Joint layout (k = 0, 1, 2):
 - Base joints sit at 120°·k ± 12°.
@@ -232,38 +232,119 @@ A scalar second-order limiter, `mc_limit2_step`, is used for each leg (and for t
 
 Speed and acceleration limits always hold. A fixed target is reached within 2 ms of the time-optimal trapezoid without overshoot. No leg passes a soft limit while the targets are inside, including targets that run into the limit at full speed and stop dead.
 
-### 6.4 Servo
-- Position loop P: `Kp_pos`.
-- Velocity loop PI with anti-windup: `Kp_vel`, `Ki_vel`.
-- Current feed-forward: gravity (from statics) and acceleration (`m_reflected · a_setpoint`).
+### 6.4 Servo (week 3)
+Per leg, in leg units (m, m/s, A), at 1 kHz:
 
-Gains come from the plant parameters, for a velocity-loop bandwidth of about 60 Hz and a position-loop bandwidth of about 15 Hz. They are verified by step responses in the unit tests.
+- **Position loop:** `v_cmd = v_sp + sign(e)·min(Kp_pos·|e|, √(2·a_brake·|e|))`, with `e = l_sp − l`.
+- **Velocity loop:** PI on `v_cmd − v`. The velocity `v` is the backward difference of the encoder. The integral stops while the output is saturated in the direction it would grow (anti-windup).
+- **Feed-forward current:** `a_sp/G + r·F_grav/(η·K_t)`, where:
+  - `G = r·K_t/J` is the leg acceleration per amp, and `r = lead/2π`;
+  - `F_grav` is the leg force from the statics at the FK pose.
+- **Current limit:** 20 A.
+
+**Gains**, designed from the plant model (`mc_servo_design`):
+
+| Gain | Value | Comes from |
+|---|---|---|
+| Kp_pos | 94.2 1/s | 15 Hz position bandwidth |
+| Kp_vel | 265.5 A/(m/s) | 60 Hz velocity bandwidth, G = 1.42 m/s²/A |
+| Ki_vel | 20 014 A/m | PI zero at 0.2 × the velocity bandwidth |
+
+**The square-root branch is a week 3 finding.** It only acts above 2·a_brake/Kp_pos² = 2.7 mm of error, with a_brake = 12 m/s².
+- Without it, a raw 10 mm step overshot by 8 % and a 100 mm step by 25 %. Once the current saturates, a linear position loop asks for more deceleration than the drive can give.
+- With it, both steps have 0 % overshoot. The 10 mm step settles to 2 % in 61 ms.
+- Normal tracking errors (µm) stay in the linear branch.
 
 ### 6.5 Actuator plant (simulation)
 State: motor angle and speed. Integration: semi-implicit Euler at 10 kHz, 10 sub-steps per servo cycle.
 
-`J_m·ω̇ = K_t·i − b·ω − T_c·sign(ω) − (lead / 2π)·F_load / η`
+`J·ω̇ = K_t·i − b·ω − T_c·tanh(ω/ω_ε) − r·F_load/η`, with `J = J_m + m_load·r²/η`
 
-Leg position `l = l_min + θ·lead/2π`. Encoder reading = `floor(counts)`. Coulomb friction uses a smooth `tanh(ω/ω_ε)` to avoid chattering at zero speed. All parameters are in `platform.json`, with values chosen for a typical 1–2 kW servo actuator and documented.
+**What the plant contains:**
+- **Leg position and encoder.** `l = l_min + θ·r`. The encoder reports whole counts.
+- **End stops** at the stroke ends. They are inelastic: the leg stops dead.
+- **Load.** `F_load` is the payload's gravity on this leg, from the statics at the *true* pose (FK of the true leg lengths). It is updated at the 500 Hz cueing rate.
+- **Payload inertia.** `m_load` is the payload mass reflected to one leg, `M / (6·cos²α)` = 105 kg (α = 27.2°, the leg angle at neutral).
+- **Seized-leg fault injection** (`stuck`), for IT08.
+
+| Parameter (platform.json `actuator`) | Value |
+|---|---|
+| Screw lead, efficiency | 10 mm/rev, 0.90 |
+| K_t, J_m (rotor + screw) | 0.55 Nm/A, 3.2e-4 kg m² (a 1.5 kW, 3000 rpm class servo motor) |
+| Viscous, Coulomb friction (smoothing) | 2e-4 Nm/(rad/s), 0.10 Nm (ω_ε = 1 rad/s) |
+| Drive current limit | 20 A (11 Nm, about 6.2 kN on the leg) |
+| Encoder | 17 bits, 131 072 counts/rev (0.076 µm per count) |
+
+**Encoder, changed in week 3.** Revision A had 4096 counts/rev, but a 1 kHz velocity estimate from it is quantised to 1.5 rad/s, which the 60 Hz velocity loop turns into ±0.65 A (about 200 N) of current noise. Servo motors of this class have 17–23 bit absolute encoders.
+
+Holding the payload at neutral takes 919 N per leg, which is 2.95 A.
+
+### 6.6 Controller core and safety state machine (week 3)
+`mcue/ctl` holds the state machine, setpoint generation and the six servos with their monitors. It is plain C with no RTOS calls, so the same code runs in three places:
+- in the firmware threads,
+- in the native_sim unit tests (`ctl` suite, against six plant models),
+- through ctypes on the host.
+
+It has two halves:
+- `mc_ctl_step` runs at 500 Hz: commands, E-stop, heartbeat, faults, states, setpoints, FK pose and the gravity feed-forward.
+- `mc_bank_step` runs at 1 kHz: six servos, plus the following-error and current-saturation monitors.
+
+They exchange one small struct in each direction (`mc_servo_cmd`, `mc_servo_fb`). Two details make that exchange safe:
+- **Setpoint interpolation.** The cueing step sends two setpoints one period apart. The servo interpolates between them, so its setpoint is linear in time, and its velocity feed-forward is their difference.
+- **Stale trips.** The feedback carries the RESET counter it belongs to, and a trip from before the last RESET is ignored. Without this, the first step after a RESET faulted again on the servo's still-latched trip (found by the `ctl` tests).
+
+| State | Leg setpoints |
+|---|---|
+| OFF | servos off; legs rest on the lower end stops |
+| HOMING | encoder plausibility check, then an S-curve to park at ≤ 0.05 m/s |
+| PARKED | hold at park (the lower soft limit) |
+| ENGAGING | S-curve to neutral in 3 s (peak 72 mm/s) |
+| ENGAGED | washout → workspace → IK → leg shaping |
+| PARKING | stop at the acceleration limit, then an S-curve to park (≥ 3 s) |
+| FAULT, ESTOP | stop at the acceleration limit, stand still 0.25 s, then descend to park at ≤ 0.05 m/s |
+
+- **Fault sources (F13):**
+  - following error > 5 mm for 50 ms;
+  - current saturated for 500 ms;
+  - a leg outside its hard limits, 5 mm inside the end stops;
+  - more than 3 overruns in a row of either loop;
+  - an implausible encoder at ENABLE;
+  - the task watchdog, which reboots as in S1.
+- **RESET** is accepted only when parked and with the E-stop released. It goes straight to PARKED if every leg is within 1 mm of park. Otherwise it re-homes through HOMING.
+- **Released leg (week 3 finding).** A leg that tripped its own monitor (seized, or too weak for the load) is *released*: its setpoint follows its encoder and its integral is cleared, so it gets only the gravity feed-forward.
+  - Before this, the servo kept pushing a seized leg at the current limit while the others descended.
+  - Its wound-up integral then dropped the leg once it was freed.
+- **Comms loss (F12)** is an event, not a latched fault. The input is set to rest, and the washout returns to neutral (within 5 mm and 0.5°, at most 10 s). Then the controller enters PARKING.
+- **Servo margin (week 3 finding).** While cueing, leg setpoints stay 0.1 mm inside the soft limits.
+  - The workspace limit and the shaper keep the *setpoints* inside the soft limits.
+  - In IT05, the servo's few µm of tracking error still carried a *measured* leg to 240.01 mm against the 240 mm soft limit.
 
 ---
 
 ## 7. CAN protocol (`protocol/motion.dbc`)
 
-11-bit IDs: the host uses 0x100–0x10F and the controller 0x180–0x18F. Values are little-endian and scaled integers.
+11-bit IDs: the host uses 0x100–0x10F and the controller 0x180–0x18F. A lower ID means higher bus priority. Values are little-endian and scaled integers; encoders round and saturate.
 
-| Frame | Dir | Rate | Content |
-|---|---|---|---|
-| VEHICLE_STATE_F | host → ctl | 100 Hz | f_x, f_y, f_z (0.001 m/s²), seq (u16) |
-| VEHICLE_STATE_W | host → ctl | 100 Hz | ω_x, ω_y, ω_z (0.0001 rad/s), seq (u16) |
-| CMD / CMD_ACK | both | on demand | ISO-TP single frames: ENABLE, ENGAGE, PARK, RESET_FAULT, SET/GET_PARAM |
-| PLATFORM_STATUS | ctl → host | 50 Hz | state, flags (saturated, FK converged, e-stop), fault code |
-| PLATFORM_POSE | ctl → host | 50 Hz | x, y, z (0.1 mm), φ, θ, ψ (0.01°) from FK |
-| ACTUATOR_FB_A / _B | ctl → host | 50 Hz | legs 1–3 / 4–6: length (0.1 mm), current (0.1 A) |
-| TIMING | ctl → host | 1 Hz | max servo and cueing cycle time (µs), overrun counts |
-| FAULT | ctl → host | on event | code, leg, value |
+| ID | Frame | Dir | Rate | Content |
+|---|---|---|---|---|
+| 0x100 | VEHICLE_F | host → ctl | 100 Hz | f_x, f_y, f_z (0.002 m/s², ±65 m/s²), seq |
+| 0x101 | VEHICLE_W | host → ctl | 100 Hz | ω_x, ω_y, ω_z (0.0001 rad/s), seq |
+| 0x10F | CMD | host → ctl | on demand | ISO-TP single frame: opcode (1 ENABLE, 2 ENGAGE, 3 PARK, 4 RESET_FAULT, 5 SET_PARAM, 6 GET_PARAM), key, value (i32) |
+| 0x180 | FAULT | ctl → host | on event | code, leg (1–6), state, count, value (µm or mA) |
+| 0x181 | STATUS | ctl → host | 50 Hz | state, flags (saturated, FK converged, E-stop, comms lost, descended), fault, fault leg, workspace scale, last event, seq |
+| 0x182 / 0x183 | POSE_T / POSE_R | ctl → host | 50 Hz | x, y, z (0.1 mm) / roll, pitch, yaw (0.01°), from FK; seq |
+| 0x184 / 0x185 | LEG_POS_A / _B | ctl → host | 50 Hz | stroke above the lower end stop (0.01 mm), legs 1–3 / 4–6; seq |
+| 0x186 / 0x187 | LEG_CUR_A / _B | ctl → host | 50 Hz | current (0.01 A), legs 1–3 / 4–6; seq |
+| 0x188 | TIMING | ctl → host | 1 Hz | worst servo and cueing cycle time (µs), overrun counts |
+| 0x18F | CMD_ACK | ctl → host | per CMD | opcode, key, status (0 OK, 1 BAD_STATE, 2 ESTOP, 3 BAD_KEY, 4 BAD_VALUE), value |
 
-As in S1: the DBC is the source of truth, a generator makes C test vectors, and `--check` runs in CI.
+**Changes from revision A, where its frames did not fit:**
+- The pose and the leg feedback needed 12 bytes. They are now two frames each (POSE_T/R, LEG_POS, LEG_CUR).
+- 0.001 m/s² of specific force overflows int16 at the 3 g heave cue (39 m/s²). The resolution is now 0.002 m/s².
+
+**Load:** about 550 frames/s, roughly 12 % of 500 kbit/s.
+
+As in S1: the DBC is the source of truth. `protocol/gen_vectors.py` encodes test vectors with cantools, the `proto` unit tests compare the C encoders and decoders byte for byte, and `--check` runs in CI.
 
 ---
 
@@ -274,14 +355,17 @@ As in S1: the DBC is the source of truth, a generator makes C test vectors, and 
 | `mcue/kin` | IK, Jacobian, FK, statics (pure C) |
 | `mcue/workspace` | soft limits, bisection scaling |
 | `mcue/washout` | filters (SOS, Tustin), tilt coordination with rate limit, Euler-rate transform |
-| `mcue/shaping` | leg-space speed/acceleration limiter, S-curve engage/park |
+| `mcue/shaping` | leg-space speed/acceleration limiter, stop point, S-curve leg moves |
 | `mcue/servo` | cascaded position/velocity controller with anti-windup and feed-forward |
 | `mcue/plant` | actuator model (simulation HAL backend) |
-| `app/cue_task` | 500 Hz loop: input interpolation → washout → workspace → IK → shaping |
-| `app/servo_task` | 1 kHz loop: six servo axes, HAL I/O, following-error monitor |
-| `app/safety` | state machine, E-stop, heartbeat, fault latching (SMF, as in S1) |
-| `app/canproto` | CAN RX/TX, ISO-TP commands (reuses the S1 canlink pattern) |
-| `app/diag` | shell, timing statistics, task watchdog |
+| `mcue/ctl` | controller core: state machine, setpoints, servo bank, monitors (§6.6) |
+| `app/motion` | servo thread (1 kHz `k_timer`, priority 1) and cue thread (500 Hz, released by every second servo tick, priority 2); spinlock exchange; timing and overrun statistics; vehicle frame pairing by seq |
+| `app/hal` | actuator HAL; `act_sim.c` is the simulation backend (six plants, gravity load from the statics at the true pose) |
+| `app/can`, `app/proto` | CAN RX/TX (the S1 canlink pattern); payload encode/decode (unit-tested against the DBC) |
+| `app/host` | 50 Hz reports, FAULT on events, 1 Hz TIMING, CMD → CMD_ACK |
+| `app/shell`, `app/sys` | `motion status\|legs\|pose\|params\|fault\|plant\|timing\|track\|cmd\|set\|get\|seize`; task watchdog (from S1) |
+
+The state machine is a plain switch in `mcue/ctl`, not Zephyr SMF. That keeps it portable to the unit tests and the ctypes host build.
 
 ---
 
@@ -295,23 +379,47 @@ As in S1: the DBC is the source of truth, a generator makes C test vectors, and 
 | filters | Tustin sections vs the continuous prototype at the pre-warped frequency (three frequencies, re and im to 1e-9); DC/Nyquist gains; unstable prototypes rejected |
 | washout | F04, P04, P05: sustained-acceleration step vs the closed form (to 1e-5 m), translation back to neutral within 6 s, tilt converges to `asin(a/g)`; tilt signs via `Rᵀ·(0, 0, g)`; tilt rate ≤ 3°/s and acceleration ≤ 20°/s² under reversals; heave and yaw-rate steps vs closed form; no residual angle after a bend |
 | shaping | F05, P03: limits on step, random-jump and sine inputs; fixed targets reached in near-minimum time without overshoot (2000 random moves); feasible moving targets followed exactly; targets that stop dead at a soft limit never passed; S-curve shape |
-| servo + plant | F06, F07, P02: step 10 mm → settles within 100 ms, overshoot < 5 %; current limit respected; static hold error under full gravity load < 0.1 mm |
+| servo + plant | F06, F07, P02: plant vs closed forms (free acceleration, holding current, end stop, encoder); 10 mm step → 0 % overshoot, settles (2 %) in 61 ms; a saturated 100 mm step stays at the current limit with no windup overshoot; static hold under the full 919 N load without feed-forward < 0.1 µm after 0.5 s; full-stroke S-curve at the leg limits tracked to 9.3 µm peak |
+| ctl | F08, F11–F13, P02, P06 at the firmware rates against six plant models (the unit-level twins of IT01–IT08): homing, engage/park, surge-step cueing (tracking 0.3 µm RMS, 4.1 µm peak), E-stop (standstill 56 ms from 0.26 m/s, descent ≤ 0.05 m/s), heartbeat loss, seized leg (fault 50 ms after the error passes 5 mm; released, re-homed after RESET), hard limit, current saturation (trip at 500 ms), overrun, implausible encoder, E-stop blocking ENABLE and RESET, parameters, input interpolation |
+| proto | F09, F10: every frame type against vectors encoded from `motion.dbc` with cantools; IDs match the DBC; ISO-TP framing; saturation instead of wrap-around |
 
 Coverage of `mcue` (gcov on native_sim) target: ≥ 90 % lines.
 
 ### 9.2 Integration tests (Robot Framework + Renode)
+The firmware runs on the emulated STM32H753 with its simulated actuators. `sim/host_feed.py` is an IronPython object inside Renode that stands in for the host on the CAN bus, so the tests are deterministic:
+- It streams VEHICLE_F/W at 100 Hz on **virtual time**, straight into FDCAN1, from scenario CSVs (`sim/data`, exported by `scenarios.py`).
+- It sends CMD frames.
+- It records every frame the controller sends, with its virtual time.
+
+`tests/robot/motionlib.py` decodes that record with the DBC layouts. Speeds are taken over 100 ms windows: the 50 Hz frames carry 1–2 ms of send jitter, which over a single 20 ms step would be a 10 % error.
+
 | Test | Covers | Scenario |
 |---|---|---|
-| IT01 boot | F08, F14 | Boot → OFF; ENABLE → HOMING → PARKED; legs at bottom |
-| IT02 engage | F08, F02 | ENGAGE → neutral within 3.5 s; FK pose ≈ 0 (≤ 0.5 mm, 0.05°); PARK → PARKED |
-| IT03 launch | F04, P04, P05 | Host sends a 3 m/s² surge step for 8 s → platform surges then washes out; pitch reaches the tilt cue; tilt rate ≤ 3°/s (from PLATFORM_POSE) |
-| IT04 lane change | F04, P02 | Sway/roll scenario → tracking error ≤ 1 mm RMS (from ACTUATOR_FB vs setpoints in the shell log) |
-| IT05 excessive cue | F03, P03 | 3 g cue → SATURATED flag, legs never beyond soft limits (all ACTUATOR_FB frames checked) |
-| IT06 E-stop | F11, P06 | Press SW1 while ENGAGED → standstill ≤ 0.5 s, descent ≤ 0.05 m/s, ESTOP state, RESET only when parked |
-| IT07 heartbeat | F12 | Stop VEHICLE_STATE for 300 ms → COMMS_LOST, washout to neutral, PARKING |
-| IT08 actuator fault | F13 | Shell command makes leg 3's plant stick → following-error fault within 60 ms → controlled descent |
+| IT01 boot | F08, F14 | Boot → OFF with the legs on the end stops; ENGAGE refused; ENABLE → HOMING → PARKED at the lower soft limit (± 0.02 mm), homing ≤ 0.05 m/s |
+| IT02 engage | F08, F02 | ENGAGE → ENGAGED within 3.5 s; FK pose neutral (≤ 0.5 mm, 0.05°); PARK → PARKED |
+| IT03 surge step | F04, P04, P05 | A pure 3 m/s² surge step for 8 s (`surge_step`, no body rotation, so the pitch is the tilt alone). Checks: platform surges > 50 mm, back within 5 mm 6 s after the step, pitch −8.80 ± 0.1°, tilt rate ≤ 3.1°/s from POSE_R (the 0.01° resolution over 100 ms) |
+| IT04 lane change | F04, P02 | Lane change; `motion track` (setpoint − encoder in the 1 kHz servo thread): ≤ 1 mm RMS and ≤ 3 mm peak |
+| IT05 excessive cue | F03, P03 | 3 g cue → SATURATED; every LEG_POS frame inside the soft limits (10–240 mm); no fault |
+| IT06 E-stop | F11, P06 | SW1 while moving → ESTOP and a FAULT frame; standstill ≤ 0.5 s; descent ≤ 0.05 m/s; RESET answers ESTOP while held, BAD_STATE until parked, then OK → PARKED |
+| IT07 heartbeat | F12 | Stop VEHICLE_STATE while ENGAGED → COMMS_LOST FAULT frame 200–230 ms later; washout to neutral; PARKING → PARKED; no latched fault |
+| IT08 seized leg | F13 | Leg 3 seized half-way through ENGAGING (all legs at 72 mm/s) → FOLLOWING fault on leg 3 within 150 ms (≈ 70 ms to pass 5 mm + 50 ms); other legs descend ≤ 0.05 m/s; freed → RESET → HOMING → PARKED |
 | IT09 timing | P01 | 10-minute virtual scenario → zero overruns; max cycle times reported in TIMING |
 | IT10 params | F09 | SET_PARAM washout gain over CAN → applied, GET returns it; invalid value rejected |
+
+**Week 3 results in Renode** (all eight pass, 118 s wall for about 75 s of virtual time):
+
+| Test | Measured |
+|---|---|
+| IT01 | homing peak 0.047 m/s; parked at 10.00 mm stroke |
+| IT02 | engage 3.00 s; FK pose 0.0 mm / 0.00° |
+| IT03 | onset peak 81.9 mm; pitch −8.80°; tilt rate 3.099°/s (3.0 + resolution) |
+| IT04 | 0.5 µm RMS, 5.5 µm peak over 10 499 servo samples |
+| IT05 | minimum workspace scale 0.405; strokes 10.09–239.91 mm |
+| IT06 | standstill 44 ms after SW1 (incl. 30 ms debounce); descent 0.0500 m/s |
+| IT07 | COMMS_LOST reported 201 ms after the last sample |
+| IT08 | fault 122 ms after the seize; descent 0.0500 m/s |
+
+**Loop timing** (TIMING frames, virtual time): servo worst 127 µs of 1000, cueing worst 581 µs of 2000 (3 g cue: the bisection runs every step), zero overruns in every test.
 
 ### 9.3 Python reference (`tools/reference/`)
 - NumPy implementation of IK, FK and the washout filters (via `scipy.signal`).
@@ -322,6 +430,10 @@ Coverage of `mcue` (gcov on native_sim) target: ≥ 90 % lines.
 - **The plant model is inside the firmware** (simulation HAL). It is useful for control design and fault tests, but a real actuator brings drive dynamics, compliance and backlash that need commissioning on hardware.
 - **Cueing quality is not validated with people.** The washout parameters are tuned on six scenarios against an objective metric (relative error of the delivered specific force at the platform centre, not at the head), not by motion-sickness or fidelity ratings. Classical washout cannot cue a 0.33 Hz lane change on this workspace (§6.3a).
 - **The scenarios are simplified.** Vehicle body roll and pitch enter as rates only; their gravity component is left out of the specific force.
+- **The legs are modelled decoupled** (week 3). Each plant carries its gravity load from the statics at the true pose, updated at 500 Hz, plus a constant reflected payload mass.
+  - A real platform couples the legs through the full 6×6 mass matrix and the payload's own inertial forces.
+  - The tracking figures (µm) are therefore for this model. Expect more on hardware.
+- **No brakes or drive enable chain is modelled.** OFF means zero current, and the end stops hold the legs. On hardware, OFF and the bottom of an E-stop descent engage the brakes and the drives' safe torque off.
 
 ---
 
@@ -348,18 +460,18 @@ Coverage of `mcue` (gcov on native_sim) target: ≥ 90 % lines.
 |---|---|---|
 | 1 | Repository from the S1 template; `platform.json`; `mcue/kin` (IK, Jacobian, FK, statics) and `workspace`; NumPy reference and vector generator | kin and workspace suites green; FK round trip and the 10 000-command property test pass |
 | 2 | `washout`, `shaping`; scenario generator; offline closed loop (cueing → kinematics, no servo) run on the host with plots; tune the parameters | washout suite green; P04/P05 shown on plots |
-| 3 | `servo`, `plant`; firmware tasks, state machine, CAN protocol and DBC; Renode tests IT01–IT08 | Integration tests green in Renode |
+| 3 | `servo`, `plant`; firmware tasks, state machine, CAN protocol and DBC; Renode tests IT01–IT08 | Integration tests green in Renode: **done 6 Nov** (61 unit tests, IT01–IT08) |
 | 4 | Host app, 3D view, video; IT09–IT10; timing; traceability; CI; README | Portfolio-ready repository with green CI |
 
 ---
 
-## 12. Open points to verify early (week 1)
+## 12. Open points to verify early (week 1; answered in week 3)
 
-- [ ] Renode speed with two fixed-rate loops (1 kHz + 500 Hz, double precision) on one STM32H753: wall-clock cost of a 10-minute virtual run, for P01 and CI time.
-- [ ] Zephyr `k_timer` jitter at 1 kHz in Renode, and whether the servo loop needs a hardware timer ISR (counter API) instead.
+- [x] Renode speed with two fixed-rate loops (1 kHz + 500 Hz, double precision) on one STM32H753: wall-clock cost of a 10-minute virtual run, for P01 and CI time. **Week 3:** about 1.6 s of wall time per virtual second with both loops and the 50 Hz reports running (75 s virtual in 118 s), so a 10-minute IT09 run takes about 16 minutes: fine for a nightly or manual job, too long for every push.
+- [x] Zephyr `k_timer` jitter at 1 kHz in Renode, and whether the servo loop needs a hardware timer ISR (counter API) instead. **Week 3:** `k_timer` with a 10 kHz tick is enough. Every test ran with zero overruns, the servo loop worst case was 127 µs and the cueing loop 581 µs (virtual time).
 - [x] Geometry sanity check (done while writing this spec): neutral legs equal at 0.787 m, single-axis workspace as in §3. Week 1 turns the script into `tools/reference/geometry_check.py` and adds combined-pose checks.
-- [ ] E-stop button behaviour on the board model (normally closed vs the board's normally open button): emulate NC in firmware config, and document it.
-- [ ] CAN load: 2 × 100 Hz in plus about 4 × 50 Hz out ≈ 400 frames/s, well inside 500 kbit/s; confirm with the S1 bridge.
+- [x] E-stop button behaviour on the board model (normally closed vs the board's normally open button): emulate NC in firmware config, and document it. **Week 3:** SW1 pressed stands for "circuit open" (main.c). ESTOP latches in the state machine, and RESET needs the button released and the platform parked.
+- [x] CAN load: 2 × 100 Hz in plus about 4 × 50 Hz out ≈ 400 frames/s, well inside 500 kbit/s; confirm with the S1 bridge. **Week 3:** with the split frames (§7) it is 200 in plus 350 out, about 550 frames/s (about 12 % of the bus). No 50 Hz frame lost a sequence number in any Renode test recording (for example, IT03 has 997 STATUS frames in 19.9 s). The SocketCAN bridge comes in week 4.
 
 ---
 

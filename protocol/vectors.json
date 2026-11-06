@@ -1,0 +1,17 @@
+{
+  "_comment": "Encoded with protocol/motion.dbc by gen_vectors.py into tests/unit/src/proto_vectors.h; the C encoders and decoders must match.",
+  "vectors": [
+    {"name": "VEHICLE_F", "message": "VEHICLE_F", "signals": {"f_x": 1.5, "f_y": -2.25, "f_z": 9.81, "seq": 42}},
+    {"name": "VEHICLE_W", "message": "VEHICLE_W", "signals": {"w_x": 0.125, "w_y": -0.05, "w_z": 0.3, "seq": 65535}},
+    {"name": "CMD_SET", "message": "CMD", "signals": {"isotp_pci": 6, "opcode": 5, "key": 1, "value": 450}},
+    {"name": "CMD_NEG", "message": "CMD", "signals": {"isotp_pci": 6, "opcode": 5, "key": 2, "value": -1}},
+    {"name": "CMD_ACK", "message": "CMD_ACK", "signals": {"isotp_pci": 7, "opcode": 6, "key": 1, "status": 0, "value": 450}},
+    {"name": "FAULT", "message": "FAULT", "signals": {"code": 1, "leg": 3, "state": 6, "count": 2, "value": -5123}},
+    {"name": "STATUS", "message": "STATUS", "signals": {"state": 4, "saturated": 1, "fk_ok": 1, "estop": 0, "comms_lost": 1, "descended": 0, "fault": 0, "fault_leg": 0, "ws_scale": 0.41, "event": 7, "seq": 1000}},
+    {"name": "POSE_T", "message": "POSE_T", "signals": {"x": 0.0825, "y": -0.0005, "z": 0.07, "seq": 5}},
+    {"name": "POSE_R", "message": "POSE_R", "signals": {"roll": 5.25, "pitch": -8.75, "yaw": 2.5, "seq": 5}},
+    {"name": "LEG_POS_A", "message": "LEG_POS_A", "signals": {"stroke_1": 0.01, "stroke_2": 0.125, "stroke_3": 0.24, "seq": 7}},
+    {"name": "LEG_CUR_B", "message": "LEG_CUR_B", "signals": {"current_4": 2.95, "current_5": -0.97, "current_6": 20.0, "seq": 7}},
+    {"name": "TIMING", "message": "TIMING", "signals": {"servo_max_us": 312, "cue_max_us": 1450, "servo_overruns": 0, "cue_overruns": 2}}
+  ]
+}

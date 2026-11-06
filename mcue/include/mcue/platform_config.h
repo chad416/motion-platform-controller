@@ -31,5 +31,32 @@
 #define MC_CFG_WO_ROT_GAIN               0.7
 #define MC_CFG_WO_ROT_WN                 1.0
 #define MC_CFG_WO_ROT_ZETA               1.0
+#define MC_CFG_ACT_SCREW_LEAD_M          0.01
+#define MC_CFG_ACT_SCREW_EFFICIENCY      0.9
+#define MC_CFG_ACT_MOTOR_KT_NM_A         0.55
+#define MC_CFG_ACT_MOTOR_INERTIA_KG_M2   0.00032
+#define MC_CFG_ACT_VISCOUS_NM_S_RAD      0.0002
+#define MC_CFG_ACT_COULOMB_NM            0.1
+#define MC_CFG_ACT_COULOMB_SMOOTHING_RAD_S 1.0
+#define MC_CFG_ACT_CURRENT_LIMIT_A       20.0
+#define MC_CFG_ACT_ENCODER_COUNTS_REV    131072.0
+#define MC_CFG_ACT_PLANT_SUBSTEPS        10.0
+#define MC_CFG_SRV_RATE_HZ               1000.0
+#define MC_CFG_SRV_POSITION_BW_HZ        15.0
+#define MC_CFG_SRV_VELOCITY_BW_HZ        60.0
+#define MC_CFG_SRV_VELOCITY_INTEGRAL_RATIO 0.2
+#define MC_CFG_SRV_POSITION_BRAKE_M_S2   12.0
+#define MC_CFG_SAF_ENGAGE_TIME_S         3.0
+#define MC_CFG_SAF_PARK_TIME_S           3.0
+#define MC_CFG_SAF_STOP_DWELL_S          0.25
+#define MC_CFG_SAF_DESCENT_SPEED_M_S     0.05
+#define MC_CFG_SAF_HARD_MARGIN_M         0.005
+#define MC_CFG_SAF_SERVO_MARGIN_M        0.0001
+#define MC_CFG_SAF_FOLLOWING_ERROR_M     0.005
+#define MC_CFG_SAF_FOLLOWING_ERROR_TIME_S 0.05
+#define MC_CFG_SAF_CURRENT_SAT_TIME_S    0.5
+#define MC_CFG_SAF_OVERRUN_LIMIT         3.0
+#define MC_CFG_SAF_HEARTBEAT_TIMEOUT_S   0.2
+#define MC_CFG_SAF_COMMS_LOST_RETURN_S   10.0
 
 #endif /* MCUE_PLATFORM_CONFIG_H_ */

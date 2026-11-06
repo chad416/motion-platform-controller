@@ -6,17 +6,16 @@ on:
 
 # Layout: the repo is checked out to <workspace>/motion-fw and is the west
 # manifest repository (west.yml, self.path: motion-fw); <workspace> is the west
-# topdir that holds zephyr/ and modules/.
+# topdir that holds zephyr/, modules/ and build/.
 env:
   MOTION_WS: ${{ github.workspace }}
   MOTION_VENV: ${{ github.workspace }}/venv
-  # Unit tests run on native_sim with the host compiler; no Zephyr SDK needed yet.
-  ZEPHYR_TOOLCHAIN_VARIANT: host
+  RENODE_VERSION: "1.17.0"
 
 jobs:
-  unit-and-reference:
+  build-and-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,26 +33,36 @@ jobs:
         run: |
           python3 -m venv "$MOTION_VENV"
           "$MOTION_VENV/bin/pip" install -q --upgrade pip
-          "$MOTION_VENV/bin/pip" install -q west numpy scipy matplotlib
+          "$MOTION_VENV/bin/pip" install -q west numpy scipy matplotlib cantools
 
-      - name: Cache Zephyr
+      - name: Cache Zephyr and SDK
         uses: actions/cache@v4
         with:
           path: |
             ${{ github.workspace }}/.west
             ${{ github.workspace }}/zephyr
             ${{ github.workspace }}/modules
-          key: zephyr-${{ hashFiles('motion-fw/west.yml') }}-v1
+            ~/zephyr-sdk-*
+          key: zephyr-${{ hashFiles('motion-fw/west.yml') }}-v2
 
-      - name: West workspace
+      - name: West workspace and SDK
         run: |
           source "$MOTION_VENV/bin/activate"
           cd "$MOTION_WS"
           [ -d .west ] || west init -l motion-fw
           west update -n -o=--depth=1
           west packages pip --install
+          ls -d ~/zephyr-sdk-* >/dev/null 2>&1 || west sdk install -t arm-zephyr-eabi
 
-      - name: Generated headers current + C vs NumPy / SciPy cross-check
+      - name: Generated files current (headers, DBC vectors, scenario CSVs)
+        run: |
+          source "$MOTION_VENV/bin/activate"
+          python3 motion-fw/protocol/gen_vectors.py --check
+          cd motion-fw/tools/reference
+          python3 gen_headers.py --check
+          python3 scenarios.py --check
+
+      - name: C vs NumPy / SciPy cross-check
         run: bash motion-fw/scripts/crosscheck.sh --n 1000
 
       - name: "Offline closed loop (P03, P04, P05 on six scenarios)"
@@ -65,18 +74,31 @@ jobs:
       - name: Unit tests (ztest on native_sim)
         run: bash motion-fw/scripts/test-unit.sh
 
-      - name: Upload test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: twister
-          path: ${{ github.workspace }}/twister-out-motion/twister.json
-          if-no-files-found: warn
+      - name: Build firmware
+        run: bash motion-fw/scripts/build.sh
 
-      - name: Upload closed-loop results
+      - name: Install Renode
+        run: |
+          mkdir -p "$HOME/renode"
+          wget -q -O /tmp/renode.tgz \
+            "https://github.com/renode/renode/releases/download/v${RENODE_VERSION}/renode-${RENODE_VERSION}.linux-portable.tar.gz"
+          tar -xzf /tmp/renode.tgz -C "$HOME/renode" --strip-components=1
+          echo "$HOME/renode" >> "$GITHUB_PATH"
+          "$MOTION_VENV/bin/pip" install -q -r "$HOME/renode/tests/requirements.txt"
+
+      - name: Integration tests IT01-IT08 (Robot Framework in Renode)
+        run: bash motion-fw/scripts/test-sim.sh
+
+      - name: Upload test reports, results and firmware
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: closed-loop
-          path: motion-fw/results/
+          name: reports
+          path: |
+            ${{ github.workspace }}/robot-out-motion/
+            ${{ github.workspace }}/twister-out-motion/twister.xml
+            ${{ github.workspace }}/twister-out-motion/twister.json
+            ${{ github.workspace }}/build/motion/zephyr/zephyr.elf
+            ${{ github.workspace }}/build/motion/zephyr/zephyr.map
+            motion-fw/results/
           if-no-files-found: warn

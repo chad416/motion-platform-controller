@@ -18,6 +18,8 @@
 #ifndef MCUE_SHAPING_H_
 #define MCUE_SHAPING_H_
 
+#include <stdbool.h>
+
 #include "mcue/geometry.h"
 
 typedef struct {
@@ -52,5 +54,32 @@ void mc_shaper_step(mc_leg_shaper *s, const double target[MC_LEGS]);
  * zero velocity and acceleration at both ends. Peak rate is 1.875 / T.
  */
 double mc_scurve(double t, double T);
+
+/*
+ * Where a limiter output at (pos, vel) comes to rest when it brakes at a_max
+ * from now: the target that stops it without turning back.
+ */
+double mc_limit2_stop_point(double pos, double vel, const mc_limit2_params *lp);
+
+/*
+ * Leg-space S-curve move from rest to rest (engage, park, homing, descent).
+ * All legs start and arrive together. The duration is the longest of T_min
+ * and what the largest leg move needs to stay within v_max and a_max
+ * (quintic peaks: speed 1.875 d / T, acceleration 5.7735 d / T^2).
+ */
+typedef struct {
+	double start[MC_LEGS];
+	double end[MC_LEGS];
+	double T;  /* s */
+	double t;  /* s, elapsed */
+	double dt; /* s, one step */
+} mc_leg_traj;
+
+void mc_traj_init(mc_leg_traj *tr, const double start[MC_LEGS], const double end[MC_LEGS],
+		  double t_min, double v_max, double a_max, double dt);
+
+/* Advance one step. Writes position, velocity, acceleration; true once at the end. */
+bool mc_traj_step(mc_leg_traj *tr, double pos[MC_LEGS], double vel[MC_LEGS],
+		  double acc[MC_LEGS]);
 
 #endif /* MCUE_SHAPING_H_ */

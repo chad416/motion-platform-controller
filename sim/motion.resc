@@ -1,0 +1,23 @@
+:name: Motion platform controller
+:description: motion_fw on the STM32H7 Renode Reference Platform, on CAN hub "canHub".
+
+# Required: $elf (path to zephyr.elf). The scripts and the Robot tests set it.
+
+$name?="motion"
+emulation CreateCANHub "canHub"
+
+mach create $name
+machine LoadPlatformDescription $ORIGIN/motion_board.repl
+connector Connect sysbus.fdcan1 canHub
+
+sysbus LoadELF $elf
+cpu EnableZephyrMode "CONFIG_TICKLESS_KERNEL"
+cpu VectorTableOffset `sysbus GetSymbolAddress "_vector_table"`
+
+# Reload the firmware on every reset (watchdog, reboot command, machine Reset).
+macro reset
+"""
+    sysbus LoadELF $elf
+    cpu EnableZephyrMode "CONFIG_TICKLESS_KERNEL"
+    cpu VectorTableOffset `sysbus GetSymbolAddress "_vector_table"`
+"""
