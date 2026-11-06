@@ -1,0 +1,18 @@
+# West manifest (T2 topology): this repository is the manifest repository.
+# Same Zephyr revision as the S1 trainer firmware, so the STM32H7 Renode
+# Reference Platform board definition and its Renode model match.
+manifest:
+  self:
+    path: motion-fw
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: c605ea46e15fb9bdd518670258a8a52d8850d8f4
+      import:
+        name-allowlist:
+          - cmsis_6
+          - hal_stm32
+          - hal_st

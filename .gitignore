@@ -1,0 +1,9 @@
+build/
+twister-out*/
+robot-out/
+*.pyc
+__pycache__/
+log.html
+report.html
+robot_output.xml
+logs/

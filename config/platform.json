@@ -1,0 +1,20 @@
+{
+  "_comment": "Reference platform (SPEC §3). Single source of truth: gen_headers.py turns it into mcue/generated/platform_config.h.",
+  "geometry": {
+    "base_radius_m": 0.80,
+    "platform_radius_m": 0.50,
+    "base_half_angle_deg": 12.0,
+    "platform_half_angle_deg": 30.0,
+    "neutral_height_m": 0.70,
+    "stroke_m": 0.25,
+    "soft_margin_m": 0.010
+  },
+  "payload": {
+    "mass_kg": 500.0,
+    "com_platform_m": [0.0, 0.0, 0.30]
+  },
+  "limits": {
+    "leg_speed_m_s": 0.5,
+    "leg_accel_m_s2": 6.0
+  }
+}
