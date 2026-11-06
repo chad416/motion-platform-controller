@@ -15,5 +15,21 @@
 #define MC_CFG_PAYLOAD_COM_Z_M           0.3
 #define MC_CFG_LEG_SPEED_M_S             0.5
 #define MC_CFG_LEG_ACCEL_M_S2            6.0
+#define MC_CFG_WO_RATE_HZ                500.0
+#define MC_CFG_WO_FORCE_GAIN             0.5
+#define MC_CFG_WO_FORCE_LIMIT_M_S2       6.0
+#define MC_CFG_WO_SURGE_SWAY_WN          3.0
+#define MC_CFG_WO_SURGE_SWAY_ZETA        1.0
+#define MC_CFG_WO_SURGE_SWAY_WB          1.0
+#define MC_CFG_WO_HEAVE_WN               2.0
+#define MC_CFG_WO_HEAVE_ZETA             1.0
+#define MC_CFG_WO_HEAVE_WB               1.0
+#define MC_CFG_WO_TILT_WN                4.0
+#define MC_CFG_WO_TILT_ZETA              1.0
+#define MC_CFG_WO_TILT_RATE_LIMIT_DEG_S  3.0
+#define MC_CFG_WO_TILT_ACCEL_LIMIT_DEG_S2 20.0
+#define MC_CFG_WO_ROT_GAIN               0.7
+#define MC_CFG_WO_ROT_WN                 1.0
+#define MC_CFG_WO_ROT_ZETA               1.0
 
 #endif /* MCUE_PLATFORM_CONFIG_H_ */

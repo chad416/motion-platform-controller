@@ -1,5 +1,5 @@
 {
-  "_comment": "Reference platform (SPEC §3). Single source of truth: gen_headers.py turns it into mcue/generated/platform_config.h.",
+  "_comment": "Reference platform (SPEC §3). Single source of truth: gen_headers.py turns it into mcue/include/mcue/platform_config.h.",
   "geometry": {
     "base_radius_m": 0.80,
     "platform_radius_m": 0.50,
@@ -16,5 +16,23 @@
   "limits": {
     "leg_speed_m_s": 0.5,
     "leg_accel_m_s2": 6.0
+  },
+  "washout": {
+    "rate_hz": 500.0,
+    "force_gain": 0.5,
+    "force_limit_m_s2": 6.0,
+    "surge_sway_wn": 3.0,
+    "surge_sway_zeta": 1.0,
+    "surge_sway_wb": 1.0,
+    "heave_wn": 2.0,
+    "heave_zeta": 1.0,
+    "heave_wb": 1.0,
+    "tilt_wn": 4.0,
+    "tilt_zeta": 1.0,
+    "tilt_rate_limit_deg_s": 3.0,
+    "tilt_accel_limit_deg_s2": 20.0,
+    "rot_gain": 0.7,
+    "rot_wn": 1.0,
+    "rot_zeta": 1.0
   }
 }

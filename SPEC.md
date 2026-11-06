@@ -122,8 +122,8 @@ Frames are right-handed, with x forward, y left and z up, for both the vehicle a
 | F01 | IK: leg lengths from pose, `l_i = ‖p + p_0 + R(φ,θ,ψ)·b_i − a_i‖`, for all six legs every cueing cycle. |
 | F02 | FK: pose from measured leg lengths by Newton–Raphson with the analytic Jacobian, converging to < 1e-6 m and 1e-6 rad within 6 iterations from the last pose. Used for monitoring and status. |
 | F03 | Workspace limiting: if a commanded pose would put any leg outside its soft limits, scale it towards neutral by bisection along the line from neutral to the command (12 iterations). The result is a valid pose of the same "shape", never individually clamped legs. Report a SATURATED flag. |
-| F04 | Classical washout (Reid–Nahon structure), from vehicle specific force `f` and angular rate `ω` at the driver's head: scaling and limiting, 3rd-order high-pass translational channel → platform displacement, 2nd-order low-pass tilt coordination → pitch/roll with a 3°/s tilt-rate limit, 2nd-order high-pass rotational channel → platform angles. Discretised with Tustin at 500 Hz; all gains and break frequencies are configurable. |
-| F05 | Leg trajectory shaping: leg setpoints respect the speed and acceleration limits (§3) with a second-order rate limiter in leg space, after workspace limiting. |
+| F04 | Classical washout (Reid–Nahon structure), from vehicle specific force `f` and angular rate `ω` at the driver's head: scaling and limiting, 3rd-order high-pass translational channel → platform displacement, 2nd-order low-pass tilt coordination → pitch/roll with a 3°/s tilt-rate limit (and a 20°/s² tilt-acceleration limit, added in week 2), 2nd-order high-pass rotational channel → platform angles. Discretised with Tustin at 500 Hz; all gains and break frequencies are configurable. |
+| F05 | Leg trajectory shaping: leg setpoints respect the speed and acceleration limits (§3) with a second-order rate limiter in leg space, after workspace limiting, and never pass the soft limits while the targets are inside them (§6.3b). |
 | F06 | Servo loop per leg at 1 kHz: P position → PI velocity → current command with velocity and gravity feed-forward. The current limit is configurable. |
 | F07 | Actuator plant (simulation HAL): motor torque constant, rotor + screw inertia, viscous and Coulomb friction, ball-screw lead, gravity load from statics (`τ = Jᵀ·F`: leg forces from the payload weight at the current pose), current limit, encoder quantisation. |
 | F08 | State machine: OFF → HOMING → PARKED → ENGAGING → ENGAGED → PARKING → PARKED, plus FAULT and ESTOP. ENGAGING and PARKING follow S-curves over 3 s; cueing runs only in ENGAGED. |
@@ -183,14 +183,16 @@ For leg `i`: `L_i = p + p_0 + R·b_i − a_i`, `l_i = ‖L_i‖`, where `a_i` ar
 Newton–Raphson: `q_{k+1} = q_k + J(q_k)⁻¹ · (l_measured − IK(q_k))`, starting from the last pose. A 6×6 solve by LU with partial pivoting. Stop when the step is under 1e-9 or after 6 iterations, and report "not converged" as a status flag rather than a fault.
 
 ### 6.3 Classical washout (per axis, configurable)
-| Channel | Filter | Starting values |
-|---|---|---|
-| Specific force scaling | gain + soft limit | k = 0.6, limit ±6 m/s² |
-| Translational | 3rd-order high-pass `s³ / ((s+ω_b)(s² + 2ζω_n s + ω_n²))`, then double integration | ω_n = 3.0 rad/s, ζ = 1, ω_b = 1.0 rad/s |
-| Tilt coordination | 2nd-order low-pass on surge/sway force → `θ = asin(f_x/g)`, `φ = −asin(f_y/g)` | ω = 4 rad/s, ζ = 1; rate limit 3°/s |
-| Rotational | gain + 2nd-order high-pass on ω → Euler-rate transform → integrate | k = 0.7, ω_n = 1.0 rad/s, ζ = 1 |
+| Channel | Filter | Starting values (rev. A) | Tuned in week 2 (§6.3a) |
+|---|---|---|---|
+| Specific force scaling | gain + soft limit (linear up to half the limit, then a smooth knee) | k = 0.6, limit ±6 m/s² | **k = 0.5** |
+| Translational | 3rd-order high-pass `s³ / ((s+ω_b)(s² + 2ζω_n s + ω_n²))`, then double integration | surge/sway ω_n = 3.0, ζ = 1, ω_b = 1.0 rad/s; heave the same with ω_n = 4.0 | surge/sway unchanged; **heave ω_n = 2.0** |
+| Tilt coordination | 2nd-order low-pass on surge/sway force → `θ = −asin(f_x/g)`, `φ = +asin(f_y/g)` | ω = 4 rad/s, ζ = 1; rate limit 3°/s | unchanged, plus **acceleration limit 20°/s²** |
+| Rotational | gain + 2nd-order high-pass on ω → Euler-rate transform (on this channel's own angles) → integrate | k = 0.7, ω_n = 1.0 rad/s, ζ = 1 | unchanged |
 
-These are typical textbook starting values, to be tuned in week 2 against the reference scenarios.
+The rev. A values were typical textbook starting points. Week 2 tuned them against the reference scenarios (§6.3a).
+
+**Tilt signs** (corrected in week 2; revision A had them reversed). With R = Rz·Ry·Rx, a positive pitch puts the nose down. The specific force the occupant feels in the platform frame at rest is `Rᵀ·(0, 0, g)`, which gives `f_x = −g·sin θ` and `f_y = +g·sin φ`. A sustained forward acceleration (`f_x > 0`) therefore needs `θ = −asin(f_x/g)` (nose up), and a leftward one needs `φ = +asin(f_y/g)`. The `washout` unit tests check this by computing `Rᵀ·(0, 0, g)` for the commanded tilt.
 
 The translational values were checked while writing this spec. For a sustained 3 m/s² surge (scaled to 1.8), the platform displacement is `X(s) = k·a / ((s+ω_b)(s+ω_n)²)`. The first draft used ω_n = 2.5 and ω_b = 0.3; that peaks at 200 mm (near the −213 mm surge limit) and takes 14.4 s to return within 5 mm, which fails P05.
 
@@ -201,6 +203,34 @@ The translational values were checked while writing this spec. For a sustained 3
 | 3.0 | 1.0 | 99 mm | 4.5 s |
 
 3.0 / 1.0 is chosen: it passes P05 and leaves room for combined motion. The cost is a shorter onset cue, which tilt coordination then carries (it reaches the 10.6° sustained cue in about 3.5 s at the 3°/s rate limit). Tilt is added to the rotational angles before workspace limiting. All filters are discretised with Tustin at 500 Hz and implemented as second-order sections in double precision (the M7 has a double-precision FPU).
+
+### 6.3a Week 2: tuning and what the closed loop found
+`tools/reference/closed_loop.py` runs the C library through ctypes on six vehicle scenarios (`scenarios.py`: launch, braking, lane change, cornering, road bump, and an excessive 3 g cue) at 500 Hz: washout → workspace limit → IK → leg shaping → FK. It measures the cue the platform actually delivers, `Rᵀ(a + g)` at the platform centre, against the cue asked for (vehicle force after soft limit and gain). Results and plots are in `results/`.
+
+**Tuning rule.** Use the highest force gain (in 0.05 steps) at which none of the five normal scenarios saturates the workspace. Saturation is safe, because the whole pose is scaled, but it distorts every axis at once. `tools/reference/tune.py` grid-searches gain, ω_n, ω_b and the tilt ω, minimising the mean relative cue error under three constraints: no saturation, no leg past a soft limit, and P05.
+- **Gain 0.6 → 0.5.** At 0.6, braking and a 4 m/s² bend saturate the workspace: the bend asks for 14.2° of roll tilt against a ±14° roll range. 0.5 is the highest gain with no saturation.
+- **Heave ω_n 4 → 2.** The relative error on the bump falls from 0.96 to 0.76 (with ω_n = 4 the high-pass leads by about 50° at 1.5 Hz), and 48 mm of stroke remains.
+- **Tilt ω.** Lowering it below 4 rad/s made every scenario worse, so it stays at 4.
+
+**Defects the closed loop found, each fixed with a regression test:**
+
+| Found | Cause | Fix |
+|---|---|---|
+| Single-sample force spikes up to ~2 m/s² at every corner of the tilt-rate trace | A rate limit alone steps the tilt rate (0 → 3°/s in one sample); the legs turn the step into a jolt | Tilt is also acceleration-limited (20°/s²), using the same second-order limiter as the legs |
+| Smaller spikes while legs track slow targets | The leg limiter switched between "brake to the target" and "land on it" whenever the target speed crossed `a_max·dt` = 12 mm/s | Exact tracking when every limit allows it (§6.3b) |
+| A leg 10.8 mm past its soft limit (excessive cue) after that change | Tracking exactly at speed leaves no reserve to stop when the target halts at the limit | Track only while the leg can still stop before the soft limit (§6.3b) |
+| 0.8° pitch left after a bend: a permanent false surge cue | The Euler-rate transform used the total roll, including tilt, so yaw rate leaked into pitch | The rotational channel transforms on its own angles |
+| 3 µm of overshoot past a fixed target | The braking law `v²/2a + v·dt/2` is exact only at whole multiples of `a·dt` | Brake for the distance less `a·dt²/8` (§6.3b) |
+| Unstable-looking first-order high-pass | Built through the biquad formula, which leaves a cancelled pole at z = −1 | A direct first-order bilinear transform |
+
+**A limit no tuning fixes.** The lane change (±3 m/s² at 0.33 Hz) has a relative error of 1.38, which is worse than not moving. At that frequency a ±1.5 m/s² cue needs ±0.35 m of sway, against ±0.21 m of workspace. The translational high-pass then leads by about 135°, and the 3°/s rate limit allows only about ±1.4° of tilt. That is a property of classical washout on this workspace. A model-predictive or optimal washout (v2) is the usual answer.
+
+### 6.3b Leg shaping (F05)
+A scalar second-order limiter, `mc_limit2_step`, is used for each leg (and for the tilt). Each step it chooses between two modes:
+- **Tracking:** output = target, if the step needed stays within v_max and a_max, the target's own velocity can be matched from it in one step, and the output could still stop before the soft limit in its direction of travel.
+- **Braking:** otherwise, move towards the target at the largest speed from which it can still stop there. The braking distance for the semi-implicit update is `v²/2a + v·dt/2`, plus at most `a·dt²/8`, which is why the law brakes for `|e| − a·dt²/8`.
+
+Speed and acceleration limits always hold. A fixed target is reached within 2 ms of the time-optimal trapezoid without overshoot. No leg passes a soft limit while the targets are inside, including targets that run into the limit at full speed and stop dead.
 
 ### 6.4 Servo
 - Position loop P: `Kp_pos`.
@@ -262,8 +292,9 @@ As in S1: the DBC is the source of truth, a generator makes C test vectors, and 
 |---|---|
 | kin | F01, F02: neutral pose gives six equal legs = `l_0`; pure heave matches the closed form; IK vs Python/NumPy reference vectors (generated, like S1's DBC vectors); FK round trip on 1000 random valid poses within 1e-6; Jacobian vs finite differences |
 | workspace | F03, P03: 10 000 random commands (including excessive ones) → every leg within soft limits; valid commands untouched; scaled pose is collinear with neutral and the command |
-| washout | F04, P04, P05: sustained-acceleration step → translation back to neutral within 6 s, tilt converges to `asin(a/g)`, tilt rate ≤ 3°/s; frequency response of the high-pass sections at three frequencies vs analytic values; Tustin stability (poles inside the unit circle) |
-| shaping | F05: leg speed/acceleration never above limits on step and random inputs; S-curve duration and end points |
+| filters | Tustin sections vs the continuous prototype at the pre-warped frequency (three frequencies, re and im to 1e-9); DC/Nyquist gains; unstable prototypes rejected |
+| washout | F04, P04, P05: sustained-acceleration step vs the closed form (to 1e-5 m), translation back to neutral within 6 s, tilt converges to `asin(a/g)`; tilt signs via `Rᵀ·(0, 0, g)`; tilt rate ≤ 3°/s and acceleration ≤ 20°/s² under reversals; heave and yaw-rate steps vs closed form; no residual angle after a bend |
+| shaping | F05, P03: limits on step, random-jump and sine inputs; fixed targets reached in near-minimum time without overshoot (2000 random moves); feasible moving targets followed exactly; targets that stop dead at a soft limit never passed; S-curve shape |
 | servo + plant | F06, F07, P02: step 10 mm → settles within 100 ms, overshoot < 5 %; current limit respected; static hold error under full gravity load < 0.1 mm |
 
 Coverage of `mcue` (gcov on native_sim) target: ≥ 90 % lines.
@@ -289,7 +320,8 @@ Coverage of `mcue` (gcov on native_sim) target: ≥ 90 % lines.
 ### 9.4 Honest limits
 - **Renode timing** is virtual, not cycle-accurate. Loop timing proves scheduling, not silicon latency.
 - **The plant model is inside the firmware** (simulation HAL). It is useful for control design and fault tests, but a real actuator brings drive dynamics, compliance and backlash that need commissioning on hardware.
-- **Cueing quality is not validated with people.** The washout parameters are textbook starting points, tuned on scenario plots.
+- **Cueing quality is not validated with people.** The washout parameters are tuned on six scenarios against an objective metric (relative error of the delivered specific force at the platform centre, not at the head), not by motion-sickness or fidelity ratings. Classical washout cannot cue a 0.33 Hz lane change on this workspace (§6.3a).
+- **The scenarios are simplified.** Vehicle body roll and pitch enter as rates only; their gravity component is left out of the specific force.
 
 ---
 

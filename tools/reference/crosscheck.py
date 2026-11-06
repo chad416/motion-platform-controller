@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Cross-check the C library (built as a host shared library) against the NumPy
-reference on random poses: IK, FK, statics and workspace scaling.
+"""Cross-check the C library (built as a host shared library) against the
+independent references:
 
-Usage: crosscheck.py [--n 1000] [--lib build/libmcue.so]
+  kinematics  NumPy (mcue_ref.py) on random poses: IK, FK, statics, workspace scale
+  washout     SciPy (washout_ref.py) on every vehicle scenario (scenarios.py)
+
+Usage: crosscheck.py [--n 1000]
 """
 from __future__ import annotations
 
@@ -10,96 +13,93 @@ import argparse
 import ctypes as C
 import json
 import math
-import pathlib
-import subprocess
 import sys
 
 import numpy as np
 
-from mcue_ref import CONFIG, ROOT, fk, ik, load_geometry, statics, ws_limit
-
-D6 = C.c_double * 6
-
-
-class Vec3(C.Structure):
-    _fields_ = [("x", C.c_double), ("y", C.c_double), ("z", C.c_double)]
+import mcue_c as M
+import scenarios
+import washout_ref
+from mcue_ref import CONFIG, fk, ik, load_geometry, statics, ws_limit
 
 
-class Pose(C.Structure):
-    _fields_ = [(n, C.c_double) for n in ("x", "y", "z", "roll", "pitch", "yaw")]
+def check_kinematics(lib, n: int) -> bool:
+    g = M.geometry(lib)
+    ref = load_geometry()
+    payload = json.loads(CONFIG.read_text())["payload"]
+    com = M.Vec3(*payload["com_platform_m"])
+
+    rng = np.random.default_rng(7)
+    lim = np.array([0.4, 0.4, 0.25, math.radians(25), math.radians(25), math.radians(50)])
+    worst = {"ik": 0.0, "fk": 0.0, "statics": 0.0, "scale": 0.0}
+    for _ in range(n):
+        q = rng.uniform(-lim, lim)
+        pose = M.Pose(*q)
+
+        legs = M.D6()
+        lib.mc_ik(C.byref(g), C.byref(pose), legs)
+        worst["ik"] = max(worst["ik"], np.max(np.abs(np.array(legs) - ik(ref, q))))
+
+        start = M.Pose()
+        info = M.FkInfo()
+        lib.mc_fk(C.byref(g), legs, C.byref(start), 10, C.c_double(1e-12), C.byref(info))
+        q_ref, _, _ = fk(ref, np.array(legs), iters=10, tol=1e-12)
+        worst["fk"] = max(worst["fk"], np.max(np.abs(np.array(start.as_list()) - q_ref)))
+
+        f = M.D6()
+        assert lib.mc_statics(C.byref(g), C.byref(pose), C.c_double(payload["mass_kg"]),
+                              C.byref(com), f)
+        f_ref = statics(ref, q, payload["mass_kg"], payload["com_platform_m"])
+        worst["statics"] = max(worst["statics"], np.max(np.abs(np.array(f) - f_ref)))
+
+        out, scale = M.Pose(), C.c_double()
+        lib.mc_ws_limit(C.byref(g), C.byref(pose), C.byref(out), C.byref(scale))
+        worst["scale"] = max(worst["scale"], abs(scale.value - ws_limit(ref, q)[1]))
+
+    print(f"kinematics, C vs NumPy on {n} random poses: max |IK| {worst['ik']:.2e} m, "
+          f"max |FK| {worst['fk']:.2e}, max |statics| {worst['statics']:.2e} N, "
+          f"max |scale| {worst['scale']:.2e}")
+    return (worst["ik"] < 1e-12 and worst["fk"] < 1e-9 and worst["statics"] < 1e-6
+            and worst["scale"] <= 1 / 4096)
 
 
-class Geometry(C.Structure):
-    _fields_ = [("base", Vec3 * 6), ("plat", Vec3 * 6)] + [
-        (n, C.c_double) for n in ("h0", "l0", "l_min", "l_max", "soft_lo", "soft_hi")]
+def run_c_washout(lib, f: np.ndarray, w: np.ndarray) -> np.ndarray:
+    wo = M.Washout()
+    p = M.washout_params(lib)
+    assert lib.mc_washout_init(C.byref(wo), C.byref(p)), "washout filters unstable"
+    out = np.zeros((len(f), 6))
+    cmd = M.Pose()
+    for k in range(len(f)):
+        lib.mc_washout_step(C.byref(wo), M.D3(*f[k]), M.D3(*w[k]), C.byref(cmd))
+        out[k] = cmd.as_list()
+    return out
 
 
-class Params(C.Structure):
-    _fields_ = [(n, C.c_double) for n in ("base_radius", "platform_radius", "base_half_deg",
-                                          "platform_half_deg", "neutral_height", "stroke",
-                                          "soft_margin")]
-
-
-class FkInfo(C.Structure):
-    _fields_ = [("iterations", C.c_int), ("residual", C.c_double), ("converged", C.c_bool)]
-
-
-def build(lib: pathlib.Path) -> None:
-    lib.parent.mkdir(parents=True, exist_ok=True)
-    src = sorted(str(p) for p in (ROOT / "mcue" / "src").glob("*.c"))
-    subprocess.run(["gcc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
-                    "-I", str(ROOT / "mcue" / "include"), *src, "-lm", "-o", str(lib)], check=True)
+def check_washout(lib) -> bool:
+    p = M.washout_params(lib)
+    rate = p.rate_hz
+    ok = True
+    for make in scenarios.ALL:
+        s = make()
+        _, f = scenarios.upsample(s.t, s.f, rate)
+        _, w = scenarios.upsample(s.t, s.w, rate)
+        c = run_c_washout(lib, f, w)
+        r = washout_ref.washout(f, w)["pose"]
+        err = np.max(np.abs(c - r), axis=0)
+        good = err[:3].max() < 1e-9 and err[3:].max() < 1e-9
+        ok &= good
+        print(f"washout, C vs SciPy, {s.name:12s} {len(f):5d} steps: max |pos| {err[:3].max():.1e} m, "
+              f"max |angle| {err[3:].max():.1e} rad {'' if good else '  <-- FAIL'}")
+    return ok
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=1000)
-    ap.add_argument("--lib", type=pathlib.Path, default=ROOT / "build" / "libmcue.so")
     a = ap.parse_args()
-    build(a.lib)
-    lib = C.CDLL(str(a.lib))
-    lib.mc_geometry_build.restype = C.c_bool
-    lib.mc_fk.restype = C.c_bool
-    lib.mc_statics.restype = C.c_bool
-    lib.mc_ws_limit.restype = C.c_int
-
-    params = Params()
-    lib.mc_geometry_default_params(C.byref(params))
-    g = Geometry()
-    assert lib.mc_geometry_build(C.byref(g), C.byref(params))
-    ref = load_geometry()
-    payload = json.loads(CONFIG.read_text())["payload"]
-    com = Vec3(*payload["com_platform_m"])
-
-    rng = np.random.default_rng(7)
-    lim = np.array([0.4, 0.4, 0.25, math.radians(25), math.radians(25), math.radians(50)])
-    worst = {"ik": 0.0, "fk": 0.0, "statics": 0.0, "scale": 0.0}
-    for _ in range(a.n):
-        q = rng.uniform(-lim, lim)
-        pose = Pose(*q)
-
-        legs = D6()
-        lib.mc_ik(C.byref(g), C.byref(pose), legs)
-        worst["ik"] = max(worst["ik"], np.max(np.abs(np.array(legs) - ik(ref, q))))
-
-        start = Pose()
-        info = FkInfo()
-        lib.mc_fk(C.byref(g), legs, C.byref(start), 10, C.c_double(1e-12), C.byref(info))
-        q_ref, _, _ = fk(ref, np.array(legs), iters=10, tol=1e-12)
-        c_fk = np.array([start.x, start.y, start.z, start.roll, start.pitch, start.yaw])
-        worst["fk"] = max(worst["fk"], np.max(np.abs(c_fk - q_ref)))
-
-        f = D6()
-        assert lib.mc_statics(C.byref(g), C.byref(pose), C.c_double(payload["mass_kg"]), C.byref(com), f)
-        worst["statics"] = max(worst["statics"], np.max(np.abs(np.array(f) - statics(ref, q, payload["mass_kg"], payload["com_platform_m"]))))
-
-        out, scale = Pose(), C.c_double()
-        lib.mc_ws_limit(C.byref(g), C.byref(pose), C.byref(out), C.byref(scale))
-        worst["scale"] = max(worst["scale"], abs(scale.value - ws_limit(ref, q)[1]))
-
-    print(f"C vs NumPy on {a.n} random poses: max |IK| {worst['ik']:.2e} m, max |FK| {worst['fk']:.2e}, "
-          f"max |statics| {worst['statics']:.2e} N, max |scale| {worst['scale']:.2e}")
-    ok = worst["ik"] < 1e-12 and worst["fk"] < 1e-9 and worst["statics"] < 1e-6 and worst["scale"] <= 1 / 4096
+    lib = M.load()
+    ok = check_kinematics(lib, a.n)
+    ok &= check_washout(lib)
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

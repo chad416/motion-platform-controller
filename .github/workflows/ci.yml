@@ -34,7 +34,7 @@ jobs:
         run: |
           python3 -m venv "$MOTION_VENV"
           "$MOTION_VENV/bin/pip" install -q --upgrade pip
-          "$MOTION_VENV/bin/pip" install -q west numpy
+          "$MOTION_VENV/bin/pip" install -q west numpy scipy matplotlib
 
       - name: Cache Zephyr
         uses: actions/cache@v4
@@ -53,8 +53,14 @@ jobs:
           west update -n -o=--depth=1
           west packages pip --install
 
-      - name: Generated headers current + C vs NumPy cross-check
+      - name: Generated headers current + C vs NumPy / SciPy cross-check
         run: bash motion-fw/scripts/crosscheck.sh --n 1000
+
+      - name: "Offline closed loop (P03, P04, P05 on six scenarios)"
+        run: |
+          source "$MOTION_VENV/bin/activate"
+          cd motion-fw/tools/reference
+          python3 closed_loop.py --check
 
       - name: Unit tests (ztest on native_sim)
         run: bash motion-fw/scripts/test-unit.sh
@@ -65,4 +71,12 @@ jobs:
         with:
           name: twister
           path: ${{ github.workspace }}/twister-out-motion/twister.json
+          if-no-files-found: warn
+
+      - name: Upload closed-loop results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: closed-loop
+          path: motion-fw/results/
           if-no-files-found: warn
