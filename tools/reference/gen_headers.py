@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 
 import numpy as np
@@ -108,12 +109,25 @@ def render_vectors() -> str:
     return "\n".join(out)
 
 
+NUMBER = re.compile(r"-?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?")
+
+
+def same(old: str, new: str) -> bool:
+    """Equal text, numbers equal to 1e-9 relative. The statics forces come from
+    a LAPACK solve whose last bits depend on the CPU the BLAS kernel picks, so
+    a byte compare fails on some CI runners; a real change moves them far more."""
+    if NUMBER.sub("#", old) != NUMBER.sub("#", new):
+        return False
+    return all(math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=1e-9)
+               for a, b in zip(NUMBER.findall(old), NUMBER.findall(new)))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     a = ap.parse_args()
     files = {CONFIG_H: render_config(json.loads(CONFIG.read_text())), VECTORS_H: render_vectors()}
-    stale = [p for p, text in files.items() if not p.exists() or p.read_text() != text]
+    stale = [p for p, text in files.items() if not p.exists() or not same(p.read_text(), text)]
     if a.check:
         for p in stale:
             print(f"{p.relative_to(ROOT)} is out of date: run tools/reference/gen_headers.py",
