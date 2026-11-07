@@ -3,6 +3,9 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1" # weekly: also runs IT09, the 10-minute timing test
 
 # Layout: the repo is checked out to <workspace>/motion-fw and is the west
 # manifest repository (west.yml, self.path: motion-fw); <workspace> is the west
@@ -15,7 +18,7 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,7 +36,7 @@ jobs:
         run: |
           python3 -m venv "$MOTION_VENV"
           "$MOTION_VENV/bin/pip" install -q --upgrade pip
-          "$MOTION_VENV/bin/pip" install -q west numpy scipy matplotlib cantools
+          "$MOTION_VENV/bin/pip" install -q west numpy scipy matplotlib cantools python-can
 
       - name: Cache Zephyr and SDK
         uses: actions/cache@v4
@@ -71,8 +74,29 @@ jobs:
           cd motion-fw/tools/reference
           python3 closed_loop.py --check
 
-      - name: Unit tests (ztest on native_sim)
-        run: bash motion-fw/scripts/test-unit.sh
+      - name: Unit tests (ztest on native_sim) with coverage
+        run: bash motion-fw/scripts/test-unit.sh --coverage --coverage-tool gcovr --coverage-basedir "$MOTION_WS/motion-fw"
+
+      - name: "Coverage of mcue >= 90 % lines (SPEC 9.1)"
+        run: |
+          source "$MOTION_VENV/bin/activate"
+          python3 - <<'EOF'
+          import json, os
+          d = json.load(open(os.path.join(os.environ["MOTION_WS"], "twister-out-motion", "coverage_summary.json")))
+          files = [f for f in d["files"] if f["filename"].startswith("mcue/")]
+          cov = sum(f["line_covered"] for f in files) / sum(f["line_total"] for f in files)
+          for f in files:
+              print(f'{f["filename"]:28s} {f["line_percent"]:5.1f} %')
+          print(f"mcue line coverage {100 * cov:.1f} %")
+          assert cov >= 0.90, "below the 90 % target"
+          EOF
+
+      - name: Host tools on the recorded session (plots, 3D view)
+        run: |
+          source "$MOTION_VENV/bin/activate"
+          cd motion-fw/tools/host
+          python3 session_plots.py ../../docs/session/session.csv.gz --out /tmp/session-check
+          python3 platform_view.py --replay ../../docs/session/session.csv.gz --frames-dir /tmp/view-check --fps 1 --to-s 10
 
       - name: Build firmware
         run: bash motion-fw/scripts/build.sh
@@ -86,8 +110,14 @@ jobs:
           echo "$HOME/renode" >> "$GITHUB_PATH"
           "$MOTION_VENV/bin/pip" install -q -r "$HOME/renode/tests/requirements.txt"
 
-      - name: Integration tests IT01-IT08 (Robot Framework in Renode)
-        run: bash motion-fw/scripts/test-sim.sh
+      - name: Integration tests IT01-IT08, IT10 (Robot Framework in Renode)
+        run: bash motion-fw/scripts/test-sim.sh --exclude long
+
+      - name: "IT09: 10 minutes of cueing, zero overruns (weekly and manual runs, ~16 min)"
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          MOTION_ROBOT_OUT: ${{ github.workspace }}/robot-out-motion-long
+        run: bash motion-fw/scripts/test-sim.sh --include long
 
       - name: Upload test reports, results and firmware
         if: always()
@@ -96,6 +126,9 @@ jobs:
           name: reports
           path: |
             ${{ github.workspace }}/robot-out-motion/
+            ${{ github.workspace }}/robot-out-motion-long/
+            ${{ github.workspace }}/twister-out-motion/coverage/
+            ${{ github.workspace }}/twister-out-motion/coverage_summary.json
             ${{ github.workspace }}/twister-out-motion/twister.xml
             ${{ github.workspace }}/twister-out-motion/twister.json
             ${{ github.workspace }}/build/motion/zephyr/zephyr.elf

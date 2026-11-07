@@ -1,6 +1,6 @@
 # S2 — 6-DOF Motion Platform Controller
 
-Specification, revision A (6 Nov 2026), with the week 2 and week 3 changes marked where they apply
+Specification, revision A (6 Nov 2026), with the week 2, 3 and 4 changes marked where they apply
 
 Embedded controller for a 6-DOF electric motion platform (a Stewart platform) of the kind used under vehicle and crew simulators. It does the following:
 - turns vehicle motion into platform motion (classical washout motion cueing),
@@ -383,7 +383,7 @@ The state machine is a plain switch in `mcue/ctl`, not Zephyr SMF. That keeps it
 | ctl | F08, F11–F13, P02, P06 at the firmware rates against six plant models (the unit-level twins of IT01–IT08): homing, engage/park, surge-step cueing (tracking 0.3 µm RMS, 4.1 µm peak), E-stop (standstill 56 ms from 0.26 m/s, descent ≤ 0.05 m/s), heartbeat loss, seized leg (fault 50 ms after the error passes 5 mm; released, re-homed after RESET), hard limit, current saturation (trip at 500 ms), overrun, implausible encoder, E-stop blocking ENABLE and RESET, parameters, input interpolation |
 | proto | F09, F10: every frame type against vectors encoded from `motion.dbc` with cantools; IDs match the DBC; ISO-TP framing; saturation instead of wrap-around |
 
-Coverage of `mcue` (gcov on native_sim) target: ≥ 90 % lines.
+Coverage of `mcue` (gcov on native_sim) target: ≥ 90 % lines. **Week 4:** 96.3 % of lines (902 of 937) and 100 % of functions (gcovr through `twister --coverage`); CI fails below 90 %.
 
 ### 9.2 Integration tests (Robot Framework + Renode)
 The firmware runs on the emulated STM32H753 with its simulated actuators. `sim/host_feed.py` is an IronPython object inside Renode that stands in for the host on the CAN bus, so the tests are deterministic:
@@ -395,7 +395,7 @@ The firmware runs on the emulated STM32H753 with its simulated actuators. `sim/h
 
 | Test | Covers | Scenario |
 |---|---|---|
-| IT01 boot | F08, F14 | Boot → OFF with the legs on the end stops; ENGAGE refused; ENABLE → HOMING → PARKED at the lower soft limit (± 0.02 mm), homing ≤ 0.05 m/s |
+| IT01 boot | F08, F14 | Boot → OFF with the legs on the end stops; ENGAGE refused; ENABLE → HOMING → PARKED at the lower soft limit (± 0.02 mm), homing ≤ 0.05 m/s; every shell report (`status`, `legs`, `pose`, `params`, `plant`, `timing`) answers |
 | IT02 engage | F08, F02 | ENGAGE → ENGAGED within 3.5 s; FK pose neutral (≤ 0.5 mm, 0.05°); PARK → PARKED |
 | IT03 surge step | F04, P04, P05 | A pure 3 m/s² surge step for 8 s (`surge_step`, no body rotation, so the pitch is the tilt alone). Checks: platform surges > 50 mm, back within 5 mm 6 s after the step, pitch −8.80 ± 0.1°, tilt rate ≤ 3.1°/s from POSE_R (the 0.01° resolution over 100 ms) |
 | IT04 lane change | F04, P02 | Lane change; `motion track` (setpoint − encoder in the 1 kHz servo thread): ≤ 1 mm RMS and ≤ 3 mm peak |
@@ -403,8 +403,8 @@ The firmware runs on the emulated STM32H753 with its simulated actuators. `sim/h
 | IT06 E-stop | F11, P06 | SW1 while moving → ESTOP and a FAULT frame; standstill ≤ 0.5 s; descent ≤ 0.05 m/s; RESET answers ESTOP while held, BAD_STATE until parked, then OK → PARKED |
 | IT07 heartbeat | F12 | Stop VEHICLE_STATE while ENGAGED → COMMS_LOST FAULT frame 200–230 ms later; washout to neutral; PARKING → PARKED; no latched fault |
 | IT08 seized leg | F13 | Leg 3 seized half-way through ENGAGING (all legs at 72 mm/s) → FOLLOWING fault on leg 3 within 150 ms (≈ 70 ms to pass 5 mm + 50 ms); other legs descend ≤ 0.05 m/s; freed → RESET → HOMING → PARKED |
-| IT09 timing | P01 | 10-minute virtual scenario → zero overruns; max cycle times reported in TIMING |
-| IT10 params | F09 | SET_PARAM washout gain over CAN → applied, GET returns it; invalid value rejected |
+| IT09 timing | P01 | 600 s ENGAGED, all seven scenarios in turn (including the 3 g cue) → zero overruns, worst cycle times inside their periods (TIMING and `motion timing`), no fault, no vehicle sample dropped, no STATUS sequence gap. Tagged `long`: about 11 min wall, run weekly and on demand in CI |
+| IT10 params | F09 | GET force gain (0.500); SET 0.250 → GET 0.250; SET 1.5 → BAD_VALUE, unknown key → BAD_KEY, both change nothing; SET while ENGAGED → BAD_STATE. Applied: the surge step's pitch holds asin(0.25·3/g) = −4.39° (± 0.1°) and the onset peak halves (40.95 ± 2 mm) |
 
 **Week 3 results in Renode** (all eight pass, 118 s wall for about 75 s of virtual time):
 
@@ -420,6 +420,15 @@ The firmware runs on the emulated STM32H753 with its simulated actuators. `sim/h
 | IT08 | fault 122 ms after the seize; descent 0.0500 m/s |
 
 **Loop timing** (TIMING frames, virtual time): servo worst 127 µs of 1000, cueing worst 581 µs of 2000 (3 g cue: the bisection runs every step), zero overruns in every test.
+
+**Week 4 results** (IT01–IT08 and IT10 pass in 127 s wall; IT09 in 11 min):
+
+| Test | Measured |
+|---|---|
+| IT09 | 601 s virtual: 604 481 servo cycles, worst 119 µs, mean 104 µs; 302 240 cueing cycles, worst 592 µs, mean 473 µs; 0 overruns; 60 410 vehicle samples, 0 dropped; 30 225 STATUS frames, no gap |
+| IT10 | ACKs as specified; onset peak 40.9 mm (IT03: 81.9 mm); pitch −4.39° |
+
+**Live host session** (`scripts/demo.sh`, `docs/session/`): the same firmware in Renode, bridged to SocketCAN `vcan0` and driven by `motion_host.py` through five scenarios, braking and an E-stop. 71.6 s of controller time, 7116 vehicle samples at a mean 10.00 ms on the controller clock (8.6–11.4 ms), no fault apart from the E-stop, servo worst 133 µs, cueing worst 591 µs, 0 overruns. The surge step played the same way reproduces IT03: onset 81.9 mm, pitch −8.80°.
 
 ### 9.3 Python reference (`tools/reference/`)
 - NumPy implementation of IK, FK and the washout filters (via `scipy.signal`).
@@ -452,6 +461,21 @@ The firmware runs on the emulated STM32H753 with its simulated actuators. `sim/h
   - `docs/traceability.md`,
   - recorded session with plots.
 
+**Week 4, as built (`tools/host/`):**
+- **`protocol.py`** decodes and encodes every frame from `motion.dbc` with cantools, the same source the firmware's proto unit tests check against.
+- **`motion_host.py`** (python-can, SocketCAN):
+  - `cmd`, `get`, `set` and `play` actions; every CMD waits for its CMD_ACK.
+  - A log of every frame in both directions (decoded, with the controller time), plus NOTE rows for the scenario names.
+  - **Pacing.** On hardware the 100 Hz stream runs on the wall clock (`--clock wall`). The emulated controller runs slower than real time, so by default the host paces the stream on the controller's own clock (`--clock ctl`): the 50 Hz STATUS seq is 20 ms of controller time, interpolated between frames with the measured rate and never stepping back. A pause in the emulation then pauses the stream instead of tripping the 200 ms heartbeat.
+- **`platform_view.py`:** a matplotlib 3D view of base, legs (shaded by utilisation) and cabin at the FK pose, with leg strokes against the soft limits and 10 s traces of surge and pitch. Live from SocketCAN, or replayed from a session log on the controller clock into PNG frames and an MP4.
+- **`session_plots.py`:**
+  - asked vs delivered specific force (the closed-loop definition, from the pose by a Savitzky–Golay second derivative);
+  - roll and pitch, and their rates;
+  - strokes, currents and loop timing;
+  - `summary.md`.
+- **`demo_session.py` + `scripts/demo.sh`:** Renode with `sim/motion_live.resc` (SocketCAN bridge), the scripted session, then plots, screenshots and video into `docs/`.
+- **Not in CI:** the SocketCAN path, because the hosted runners have no `vcan` module. CI runs the plots and the 3D view on the recorded session (`docs/session/session.csv.gz`).
+
 ---
 
 ## 11. Milestones (about 8–10 h/week)
@@ -461,17 +485,17 @@ The firmware runs on the emulated STM32H753 with its simulated actuators. `sim/h
 | 1 | Repository from the S1 template; `platform.json`; `mcue/kin` (IK, Jacobian, FK, statics) and `workspace`; NumPy reference and vector generator | kin and workspace suites green; FK round trip and the 10 000-command property test pass |
 | 2 | `washout`, `shaping`; scenario generator; offline closed loop (cueing → kinematics, no servo) run on the host with plots; tune the parameters | washout suite green; P04/P05 shown on plots |
 | 3 | `servo`, `plant`; firmware tasks, state machine, CAN protocol and DBC; Renode tests IT01–IT08 | Integration tests green in Renode: **done 6 Nov** (61 unit tests, IT01–IT08) |
-| 4 | Host app, 3D view, video; IT09–IT10; timing; traceability; CI; README | Portfolio-ready repository with green CI |
+| 4 | Host app, 3D view, video; IT09–IT10; timing; traceability; CI; README | Portfolio-ready repository with green CI: **done 6 Nov** except the first CI run, which needs the push (IT01–IT08 and IT10, IT09, coverage 96.3 %, live host session, `docs/traceability.md`) |
 
 ---
 
 ## 12. Open points to verify early (week 1; answered in week 3)
 
-- [x] Renode speed with two fixed-rate loops (1 kHz + 500 Hz, double precision) on one STM32H753: wall-clock cost of a 10-minute virtual run, for P01 and CI time. **Week 3:** about 1.6 s of wall time per virtual second with both loops and the 50 Hz reports running (75 s virtual in 118 s), so a 10-minute IT09 run takes about 16 minutes: fine for a nightly or manual job, too long for every push.
+- [x] Renode speed with two fixed-rate loops (1 kHz + 500 Hz, double precision) on one STM32H753: wall-clock cost of a 10-minute virtual run, for P01 and CI time. **Week 3:** about 1.6 s of wall time per virtual second with both loops and the 50 Hz reports running (75 s virtual in 118 s), so a 10-minute IT09 run takes about 16 minutes: fine for a nightly or manual job, too long for every push. **Week 4:** IT09 took 11 min for 601 s of virtual time (1.1 s wall per virtual second; the short tests spend more of their time on boot and keyword round trips). It runs weekly and on demand in CI.
 - [x] Zephyr `k_timer` jitter at 1 kHz in Renode, and whether the servo loop needs a hardware timer ISR (counter API) instead. **Week 3:** `k_timer` with a 10 kHz tick is enough. Every test ran with zero overruns, the servo loop worst case was 127 µs and the cueing loop 581 µs (virtual time).
 - [x] Geometry sanity check (done while writing this spec): neutral legs equal at 0.787 m, single-axis workspace as in §3. Week 1 turns the script into `tools/reference/geometry_check.py` and adds combined-pose checks.
 - [x] E-stop button behaviour on the board model (normally closed vs the board's normally open button): emulate NC in firmware config, and document it. **Week 3:** SW1 pressed stands for "circuit open" (main.c). ESTOP latches in the state machine, and RESET needs the button released and the platform parked.
-- [x] CAN load: 2 × 100 Hz in plus about 4 × 50 Hz out ≈ 400 frames/s, well inside 500 kbit/s; confirm with the S1 bridge. **Week 3:** with the split frames (§7) it is 200 in plus 350 out, about 550 frames/s (about 12 % of the bus). No 50 Hz frame lost a sequence number in any Renode test recording (for example, IT03 has 997 STATUS frames in 19.9 s). The SocketCAN bridge comes in week 4.
+- [x] CAN load: 2 × 100 Hz in plus about 4 × 50 Hz out ≈ 400 frames/s, well inside 500 kbit/s; confirm with the S1 bridge. **Week 3:** with the split frames (§7) it is 200 in plus 350 out, about 550 frames/s (about 12 % of the bus). No 50 Hz frame lost a sequence number in any Renode test recording (for example, IT03 has 997 STATUS frames in 19.9 s). **Week 4:** the SocketCAN bridge (`sim/motion_live.resc`) carries the live host session with no lost STATUS sequence number either.
 
 ---
 

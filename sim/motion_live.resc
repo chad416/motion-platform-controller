@@ -1,0 +1,11 @@
+:name: Motion platform controller, live
+:description: motion.resc plus a bridge from the emulated CAN bus to the host's SocketCAN vcan0, and the UART log in a file, for the host tools.
+
+# Required: $elf. Host prerequisite (Linux/WSL): modprobe vcan; ip link add dev vcan0 type vcan; ip link set up vcan0
+
+include $ORIGIN/motion.resc
+
+machine CreateSocketCANBridge "socketcan" "vcan0"
+connector Connect socketcan canHub
+
+sysbus.usart2 CreateFileBackend @/tmp/motion_uart.log true

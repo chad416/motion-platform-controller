@@ -19,6 +19,10 @@ ${OP_GET}           6
 ${ST_OK}            0
 ${ST_BAD_STATE}     1
 ${ST_ESTOP}         2
+${ST_BAD_KEY}       3
+${ST_BAD_VALUE}     4
+# SET_PARAM / GET_PARAM keys (mcue/ctl.h mc_param_key)
+${KEY_FORCE_GAIN}   1
 
 # Leg limits as stroke above the lower end stop (SPEC §3): soft 10 / 240 mm
 ${SOFT_LO_MM}       10.0

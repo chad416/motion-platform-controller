@@ -23,6 +23,19 @@ IT01 Boot Is Off Then Homes To Park
     Advance                     0.3
     Shell                       motion version
     Wait For Line On Uart       motion_fw 0.3.0
+    # F14 diagnostics: every shell report answers
+    Shell                       motion status
+    Wait For Line On Uart       content=state=PARKED phase=
+    Shell                       motion legs
+    Wait For Line On Uart       content=leg6 length=
+    Shell                       motion pose
+    Wait For Line On Uart       content=cmd x=
+    Shell                       motion params
+    Wait For Line On Uart       content=force_gain=0.500
+    Shell                       motion plant
+    Wait For Line On Uart       content=leg6 true_length=
+    Shell                       motion timing
+    Wait For Line On Uart       content=TIMING cue cycles=
     ${p}=                       Dump Frames    it01
     ${acks}=                    Acks    ${p}
     Should Be Equal             ${acks}[0]    2 0 ${ST_BAD_STATE} 0    ENGAGE must be refused in OFF
@@ -241,3 +254,87 @@ IT08 Seized Leg Faults And Descends
     Should Be Equal             ${code}    ${{["1", "3"]}}    FAULT frame: FOLLOWING on leg 3
     ${acks}=                    Acks    ${p}
     Should Be Equal             ${acks}[-1]    4 0 ${ST_OK} 0
+
+IT09 Ten Minutes Of Cueing Without Overruns
+    [Tags]    long
+    [Documentation]    P01: 600 s of virtual time ENGAGED, playing all seven scenarios in turn
+    ...                (including the 3 g cue, where the workspace bisection runs every step):
+    ...                zero servo and cueing overruns, worst cycle times inside their periods,
+    ...                no fault, no lost vehicle sample, no lost STATUS frame. About 16 min wall.
+    Boot
+    Engage
+    ${names}=                   Create List    launch    braking    lane_change    cornering
+    ...                         bump    excessive    surge_step
+    ${files}=                   Evaluate    "[" + ",".join("'${SIM_DIR}/data/%s.csv'" % n for n in $names) + "]"
+    ${t0}=                      Virtual Time Ms
+    Host                        mh.playlist(${files}, 600)
+    FOR    ${i}    IN RANGE    60
+        Advance                 10
+    END
+    Advance                     1.1
+    Shell                       motion timing
+    ${ls}=                      Wait For Line On Uart    TIMING servo cycles=
+    ${lc}=                      Wait For Line On Uart    TIMING cue cycles=
+    ${lv}=                      Wait For Line On Uart    vehicle samples=
+    Log                         ${ls}[Line]
+    Log                         ${lc}[Line]
+    Log                         ${lv}[Line]
+    ${t_end}=                   Virtual Time Ms
+    ${p}=                       Dump Frames    it09
+    ${tm}=                      Timing Frames    ${p}
+    Log                         last TIMING frame (servo us, cue us, overruns) ${tm}[-1]
+    Should Be True              len($tm) >= 600    only ${{ len($tm) }} TIMING frames
+    Should Be True              ${tm}[-1][2] == 0 and ${tm}[-1][3] == 0    overruns ${tm}[-1]
+    Should Be True              ${tm}[-1][0] < 1000    servo worst ${tm}[-1][0] us
+    Should Be True              ${tm}[-1][1] < 2000    cueing worst ${tm}[-1][1] us
+    ${f}=                       Fault Frames    ${p}
+    Should Be Empty             ${f}    no fault expected
+    ${st}=                      Last Status    ${p}
+    Should Be Equal             ${st}[state]    ENGAGED
+    ${g}=                       Seq Gaps    ${p}    0x181
+    Should Be Equal As Integers    ${g}    0    STATUS frames lost
+    ${n}=                       Frame Count    ${p}    0x181
+    Log                         ${n} STATUS frames over ${{ ($t_end - $t0) / 1000 }} s virtual
+    Should Contain              ${lv}[Line]    dropped=0
+    ${m}=                       Evaluate    int(re.search(r"samples=(\\d+)", $lv["Line"]).group(1))    modules=re
+    Should Be True              ${m} >= 60000    only ${m} vehicle samples
+
+IT10 Washout Parameter Over CAN
+    [Documentation]    F09: GET_PARAM / SET_PARAM over CAN. The force gain is read (0.500),
+    ...                set to 0.250 and read back; out-of-range values and unknown keys are
+    ...                rejected and change nothing; a SET while ENGAGED is refused (the filters
+    ...                are re-initialised). The new gain is applied: under the 3 m/s^2 surge step
+    ...                the pitch holds asin(0.25 * 3 / g) = -4.39 deg instead of -8.80 deg, and the
+    ...                onset peak (linear in the gain) halves from IT03's 81.9 mm.
+    Boot
+    Enable And Park
+    Host                        mh.cmd(${OP_GET}, ${KEY_FORCE_GAIN})
+    Host                        mh.cmd(${OP_SET}, ${KEY_FORCE_GAIN}, 250)
+    Host                        mh.cmd(${OP_GET}, ${KEY_FORCE_GAIN})
+    Host                        mh.cmd(${OP_SET}, ${KEY_FORCE_GAIN}, 1500)
+    Host                        mh.cmd(${OP_SET}, 99, 1)
+    Host                        mh.cmd(${OP_GET}, ${KEY_FORCE_GAIN})
+    Advance                     0.1
+    Host                        mh.start()
+    Host                        mh.cmd(${OP_ENGAGE})
+    Wait For Line On Uart       STATE ENGAGED    timeout=4
+    Host                        mh.cmd(${OP_SET}, ${KEY_FORCE_GAIN}, 300)
+    ${t0}=                      Play    surge_step
+    Advance                     9.5
+    ${p}=                       Dump Frames    it10
+    ${acks}=                    Acks    ${p}
+    Log                         ${acks}
+    Should Be Equal             ${acks}[0]    1 0 ${ST_OK} 0    ENABLE
+    Should Be Equal             ${acks}[1]    6 1 ${ST_OK} 500    default force gain
+    Should Be Equal             ${acks}[2]    5 1 ${ST_OK} 250
+    Should Be Equal             ${acks}[3]    6 1 ${ST_OK} 250    read back
+    Should Be Equal             ${acks}[4]    5 1 ${ST_BAD_VALUE} 1500    gain above 1 must be rejected
+    Should Be Equal             ${acks}[5]    5 99 ${ST_BAD_KEY} 1
+    Should Be Equal             ${acks}[6]    6 1 ${ST_OK} 250    rejected SETs must not change it
+    Should Be Equal             ${acks}[8]    5 1 ${ST_BAD_STATE} 300    SET while ENGAGED
+    ${ext}=                     Pose Extremes    ${p}    ${t0}    ${{ $t0 + 3000 }}
+    Log                         surge onset peak ${ext}[0] mm with gain 0.25
+    Should Be Near              ${ext}[0]    40.95    2    onset peak (mm), half of 81.9
+    ${q}=                       Pose After    ${p}    ${{ $t0 + 8900 }}
+    Log                         pitch ${q}[4] deg with gain 0.25
+    Should Be Near              ${q}[4]    -4.39    0.1    pitch (deg) holding the 0.75 m/s^2 cue

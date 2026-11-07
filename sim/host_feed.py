@@ -67,15 +67,31 @@ class MotionHost(object):
         return len(self.log)
 
     # ---- vehicle input ------------------------------------------------------
-    def load(self, path):
-        """Scenario CSV at 100 Hz: t,fx,fy,fz,wx,wy,wz (header line first)."""
+    @staticmethod
+    def _read(path):
         rows = []
         for line in open(path).read().splitlines()[1:]:
             if line.strip():
                 rows.append(tuple(float(x) for x in line.split(",")[1:7]))
-        self.samples = rows
+        return rows
+
+    def load(self, path):
+        """Scenario CSV at 100 Hz: t,fx,fy,fz,wx,wy,wz (header line first)."""
+        self.samples = self._read(path)
         self.k = 0
-        return len(rows)
+        return len(self.samples)
+
+    def playlist(self, paths, seconds):
+        """Play the scenario CSVs one after another, repeating the list, for `seconds`."""
+        parts = [self._read(p) for p in paths]
+        rows = []
+        n = int(round(seconds * 100))
+        while len(rows) < n:
+            for part in parts:
+                rows += part
+        self.samples = rows[:n]
+        self.k = 0
+        return len(self.samples)
 
     def const(self, fx, fy, fz, wx=0.0, wy=0.0, wz=0.0):
         """Stream a constant sample (after the scenario, if one is loaded)."""

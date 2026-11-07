@@ -205,6 +205,14 @@ def acks(path):
             for _t, fid, b in _frames(path) if fid == ID_CMD_ACK]
 
 
+def seq_gaps(path, frame_id):
+    """Frames of `frame_id` lost between the first and the last one, from the
+    16-bit seq in bytes 6-7 (STATUS, POSE_*, LEG_*)."""
+    fid = int(frame_id, 0) if isinstance(frame_id, str) else int(frame_id)
+    seqs = [_u16(b, 6) for _t, i, b in _frames(path) if i == fid]
+    return sum(((b - a) & 0xFFFF) - 1 for a, b in zip(seqs, seqs[1:]))
+
+
 def timing_frames(path):
     return [[_u16(b, 0), _u16(b, 2), _u16(b, 4), _u16(b, 6)]
             for _t, fid, b in _frames(path) if fid == ID_TIMING]
