@@ -42,7 +42,7 @@ Results are from the week 4 runs on 6 Nov 2026 (firmware 0.3.0):
 | P03 | No leg past its soft limits, speed or acceleration limits, in any scenario; 10 000-command property test | unit `workspace` (`test_property_10000_random_commands`), unit `shaping` (`test_random_moving_targets_keep_limits`, `test_targets_stopping_at_the_soft_limit_are_not_passed`); IT05 (strokes 10.09–239.91 mm under the 3 g cue); closed loop | Met | The servo margin (0.1 mm) keeps the measured leg inside even with its tracking error |
 | P04 | Tilt-coordination rate ≤ 3°/s | unit `washout` (`test_tilt_rate_never_exceeds_limit`); IT03 (≤ 3.1°/s: 3.0 plus the POSE_R resolution); closed loop | Met | |
 | P05 | Sustained step: translation back to neutral within 6 s, tilt holds the cue | unit `washout` (`test_surge_step_washes_out`); IT03 (pitch −8.80°, back within 5 mm); IT10 (−4.39° at half gain) | Met | |
-| P06 | E-stop to standstill ≤ 0.5 s, then descent ≤ 0.05 m/s | unit `ctl` (`test_estop_stops_then_descends`); IT06 | Met | Standstill 44 ms after SW1 (including the 30 ms debounce); descent 0.050 m/s |
+| P06 | E-stop to standstill ≤ 0.5 s, then descent ≤ 0.05 m/s | unit `ctl` (`test_estop_stops_then_descends`); IT06 | Met | Standstill 44 ms after SW1 (including the 30 ms debounce); descent at most 0.0496 m/s (500 ms windows) |
 
 ## Not covered in simulation
 

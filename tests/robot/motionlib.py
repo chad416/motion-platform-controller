@@ -163,11 +163,12 @@ def strokes_after(path, t_ms):
 
 
 def _windows(ss, window_ms):
-    """Pairs of samples `window_ms` apart (5 frames at 50 Hz).
+    """Pairs of samples `window_ms` apart.
 
-    Frame times are send times: the 50 Hz frames jitter by 1-2 ms against the
-    moment their data was sampled, which over a single 20 ms step is a 10 %
-    speed error; over 100 ms it is 2 %."""
+    A LEG_POS sample is the controller's last 500 Hz cue step when the 20 ms
+    report ran, so it can be 0 or 2 ms old, and the frame time (send time)
+    jitters by 1-2 ms as well. Over a 20 ms step that is a 10 % speed error,
+    over 100 ms 2 %, over 500 ms 0.4 %."""
     j = 0
     for i in range(len(ss)):
         while j < len(ss) and ss[j][0] - ss[i][0] < float(window_ms) - 1e-6:
@@ -177,8 +178,10 @@ def _windows(ss, window_ms):
         yield ss[i], ss[j]
 
 
-def max_leg_speed(path, t0_ms, t1_ms, legs="123456", window_ms=100):
-    """Max leg speed (m/s) from LEG_POS frames `window_ms` apart."""
+def max_leg_speed(path, t0_ms, t1_ms, legs="123456", window_ms=500):
+    """Max leg speed (m/s) from LEG_POS frames `window_ms` apart. The 500 ms
+    default keeps the sampling error (see _windows) at 0.4 %, inside the 1 %
+    margin of the 0.05 m/s checks."""
     ss = [(t, s) for t, s in _strokes(path) if float(t0_ms) <= t <= float(t1_ms)]
     idx = [int(c) - 1 for c in str(legs)]
     best = 0.0

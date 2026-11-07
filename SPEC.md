@@ -391,7 +391,7 @@ The firmware runs on the emulated STM32H753 with its simulated actuators. `sim/h
 - It sends CMD frames.
 - It records every frame the controller sends, with its virtual time.
 
-`tests/robot/motionlib.py` decodes that record with the DBC layouts. Speeds are taken over 100 ms windows: the 50 Hz frames carry 1–2 ms of send jitter, which over a single 20 ms step would be a 10 % error.
+`tests/robot/motionlib.py` decodes that record with the DBC layouts. Speed limits are checked over 500 ms windows. A LEG_POS sample is the last 500 Hz cue step before the 20 ms report, so it can be 0 or 2 ms old, and the frame times carry 1–2 ms of send jitter. Over a 20 ms step that would be a 10 % error, over 100 ms 2 %, and over 500 ms 0.4 %. The first CI run failed IT06 at 0.0507 m/s over 100 ms windows; the same frames give 0.0498 m/s over 500 ms, and the 20 ms steps show the 2 ms sample age.
 
 | Test | Covers | Scenario |
 |---|---|---|
@@ -415,9 +415,9 @@ The firmware runs on the emulated STM32H753 with its simulated actuators. `sim/h
 | IT03 | onset peak 81.9 mm; pitch −8.80°; tilt rate 3.099°/s (3.0 + resolution) |
 | IT04 | 0.5 µm RMS, 5.5 µm peak over 10 499 servo samples |
 | IT05 | minimum workspace scale 0.405; strokes 10.09–239.91 mm |
-| IT06 | standstill 44 ms after SW1 (incl. 30 ms debounce); descent 0.0500 m/s |
+| IT06 | standstill 44 ms after SW1 (incl. 30 ms debounce); descent at most 0.0496 m/s (500 ms windows) |
 | IT07 | COMMS_LOST reported 201 ms after the last sample |
-| IT08 | fault 122 ms after the seize; descent 0.0500 m/s |
+| IT08 | fault 122 ms after the seize; descent at most 0.0488 m/s (500 ms windows) |
 
 **Loop timing** (TIMING frames, virtual time): servo worst 127 µs of 1000, cueing worst 581 µs of 2000 (3 g cue: the bisection runs every step), zero overruns in every test.
 

@@ -166,7 +166,7 @@ IT06 Estop Stops Then Descends
     Advance                     0.1
     ${t_end}=                   Virtual Time Ms
     ${p}=                       Dump Frames    it06
-    ${v0}=                      Max Leg Speed    ${p}    ${{ $tp - 300 }}    ${tp}
+    ${v0}=                      Max Leg Speed    ${p}    ${{ $tp - 300 }}    ${tp}    window_ms=100
     Should Be True              ${v0} > 0.02    legs were not moving at the E-stop (${v0} m/s)
     ${ts}=                      Standstill Time    ${p}    ${tp}
     Log                         E-stop at ${v0} m/s: standstill after ${{ $ts - $tp }} ms

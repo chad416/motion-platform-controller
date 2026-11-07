@@ -45,7 +45,7 @@ An offline closed loop runs the C library on six vehicle scenarios and measures 
 | Live host session over SocketCAN (demo) | 100 Hz stream at a mean 10.00 ms on the controller clock; no lost report frame in 3579 cycles; IT03 reproduced (81.9 mm, −8.80°) |
 | Line coverage of `mcue` (gcovr) | 96.3 %, 100 % of functions (CI gate ≥ 90 %) |
 | Leg tracking in the firmware, lane change (IT04) | 0.5 µm RMS, 5.5 µm peak (limit 1 mm / 3 mm) |
-| E-stop while moving (IT06) | standstill 44 ms after the button, descent at 0.050 m/s |
+| E-stop while moving (IT06) | standstill 44 ms after the button, descent at most 0.0496 m/s |
 | Seized leg during ENGAGING (IT08) | following-error fault on that leg 122 ms after it seized; the others descend |
 | Heartbeat loss (IT07) | COMMS_LOST 201 ms after the last sample, washout to neutral, park |
 | Loop timing in Renode (virtual time) | servo worst 127 µs of 1000, cueing worst 581 µs of 2000, zero overruns |
@@ -126,7 +126,7 @@ The log is replayed into the plots and the video. Everything below is the contro
 | | |
 |---|---|
 | ![3 g cue: the workspace limit scales the command to 0.41 and leg 5 meets its soft limit](docs/media/platform_view_2.png) | ![E-stop during braking: stop, then the descent](docs/media/platform_view_3.png) |
-| 3 g cue: the command is scaled to 0.41; leg 5 reaches its soft limit and stops there. | E-stop during braking: the cue stops and the platform descends to park at 0.05 m/s (IT06 measures 0.0500 m/s). |
+| 3 g cue: the command is scaled to 0.41; leg 5 reaches its soft limit and stops there. | E-stop during braking: the cue stops and the platform descends to park at 0.05 m/s (IT06 measures at most 0.0496 m/s). |
 
 ![Asked vs delivered specific force, tilt, rates](docs/session/session_cue.png)
 ![Leg strokes, currents, loop timing](docs/session/session_legs.png)
