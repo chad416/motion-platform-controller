@@ -485,7 +485,7 @@ The firmware runs on the emulated STM32H753 with its simulated actuators. `sim/h
 | 1 | Repository from the S1 template; `platform.json`; `mcue/kin` (IK, Jacobian, FK, statics) and `workspace`; NumPy reference and vector generator | kin and workspace suites green; FK round trip and the 10 000-command property test pass |
 | 2 | `washout`, `shaping`; scenario generator; offline closed loop (cueing → kinematics, no servo) run on the host with plots; tune the parameters | washout suite green; P04/P05 shown on plots |
 | 3 | `servo`, `plant`; firmware tasks, state machine, CAN protocol and DBC; Renode tests IT01–IT08 | Integration tests green in Renode: **done 6 Nov** (61 unit tests, IT01–IT08) |
-| 4 | Host app, 3D view, video; IT09–IT10; timing; traceability; CI; README | Portfolio-ready repository with green CI: **done 6 Nov** except the first CI run, which needs the push (IT01–IT08 and IT10, IT09, coverage 96.3 %, live host session, `docs/traceability.md`) |
+| 4 | Host app, 3D view, video; IT09–IT10; timing; traceability; CI; README | Portfolio-ready repository with green CI: **done 6 Nov** (IT01–IT08 and IT10, IT09, coverage 96.3 %, live host session, `docs/traceability.md`); **CI green 7 Nov** after two fixes to the checks, not the firmware (leg speed over 500 ms windows, §9.2; `gen_headers.py --check` compares numbers to 1e-9, because the LAPACK statics differ in the last bits between runner CPUs); IT09 green in CI on a manual run (10 min 10 s, same timing as locally: servo 119 µs, cue 592 µs, 0 overruns) |
 
 ---
 
