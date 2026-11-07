@@ -24,9 +24,9 @@ The **host** (`tools/host/`, week 4) talks to the same firmware over SocketCAN:
 - it shows the platform in 3D;
 - it plots the session.
 
-![3D view during the cornering scenario](docs/media/platform_view_1.png)
+![3D view: 3 g cue, then braking with an E-stop and the descent to park](docs/media/platform_view.gif)
 
-Video of the whole recorded session: [docs/media/platform_view.mp4](docs/media/platform_view.mp4) (72 s). It runs five scenarios, then braking with an E-stop.
+*17 s of the recorded session: the 3 g cue, then braking with an E-stop and the descent to park. The whole 72 s session (five scenarios, then the E-stop) is [docs/media/platform_view.mp4](docs/media/platform_view.mp4); GitHub's file page does not play video, so use Raw to download it.*
 
 An offline closed loop runs the C library on six vehicle scenarios and measures the cue the platform actually delivers. Tuning on it changed two parameters, added one (the tilt acceleration limit) and exposed six defects. Each was fixed and now has a regression test (SPEC §6.3a). Week 3 found four more, each fixed with a test (SPEC §6.4, §6.6):
 - the servo overshot raw steps;
@@ -122,6 +122,8 @@ The controller core (`mcue/ctl`) is plain C. The firmware threads, the unit test
 - RESET, which the controller refuses while the button is held and accepts after the descent.
 
 The log is replayed into the plots and the video. Everything below is the controller's own output over CAN: FK pose, leg strokes, currents and timing.
+
+![3D view during the cornering scenario](docs/media/platform_view_1.png)
 
 | | |
 |---|---|
