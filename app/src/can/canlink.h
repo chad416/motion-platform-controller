@@ -1,4 +1,4 @@
-/* CAN transport: TX queue + thread, RX filters, bus state (as in the S1 firmware). */
+/* CAN transport: TX queue + thread, RX filters, bus state. */
 #ifndef MOTION_CANLINK_H_
 #define MOTION_CANLINK_H_
 
@@ -21,7 +21,7 @@ struct canlink_stats {
 /* FDCAN1, classic CAN 500 kbit/s: filters for VEHICLE_F/W and CMD, TX thread. */
 int canlink_init(void);
 
-/* Queue a frame. Never blocks. 0, or -ENOBUFS (counted) if the queue is full. */
+/* Queue a frame. Never blocks. 0; -EINVAL if len > 8; -ENOBUFS (counted) if the queue is full. */
 int canlink_send(uint16_t id, const uint8_t *data, uint8_t len);
 
 /* CMD frames (struct can_frame) for the host thread. */

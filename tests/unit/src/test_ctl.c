@@ -11,10 +11,7 @@
 #include "mcue/kin.h"
 #include "mcue/plant.h"
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-#define DEG (M_PI / 180.0)
+#define DEG (MC_PI / 180.0)
 
 struct sim {
 	mc_geometry g;
@@ -28,6 +25,8 @@ struct sim {
 	double t;
 	/* vehicle input */
 	bool streaming;
+	bool repeat_seq; /* a host stuck on one frame: the sequence number does not advance */
+	uint16_t seq;
 	double f[3], w[3];
 	int step_no;
 	/* records */
@@ -82,7 +81,10 @@ static void sim_step(struct sim *s)
 	double load[MC_LEGS];
 
 	if (s->streaming && ((s->step_no % 5) == 0)) {
-		mc_ctl_vehicle(&s->c, s->f, s->w);
+		(void)mc_ctl_vehicle(&s->c, s->f, s->w, s->seq);
+		if (!s->repeat_seq) {
+			s->seq++;
+		}
 	}
 	s->step_no++;
 	mc_ctl_step(&s->c, &s->b.fb, s->estop, s->overrun, &s->cmd);
@@ -393,7 +395,7 @@ ZTEST(ctl, test_seized_leg_faults_and_descends)
 ZTEST(ctl, test_hard_limit_fault)
 {
 	engage(&S);
-	S.pl[4].theta = (S.c.p.hard_hi + 0.001 - S.g.l_min) / (S.pl[4].p.lead / (2.0 * M_PI));
+	S.pl[4].theta = (S.c.p.hard_hi + 0.001 - S.g.l_min) / (S.pl[4].p.lead / (2.0 * MC_PI));
 	run(&S, 0.01);
 	zassert_equal(S.c.state, MC_ST_FAULT);
 	zassert_equal(S.c.fault, MC_FAULT_HARD_LIMIT);
@@ -485,9 +487,9 @@ ZTEST(ctl, test_input_interpolation)
 	double f0[3] = {0.0, 0.0, MC_GRAVITY}, f1[3] = {1.0, -2.0, MC_GRAVITY + 0.5};
 	double w0[3] = {0}, w1[3] = {0.1, 0.0, -0.05};
 
-	mc_ctl_vehicle(&S.c, f0, w0);
+	zassert_true(mc_ctl_vehicle(&S.c, f0, w0, S.seq++));
 	run(&S, 0.01);
-	mc_ctl_vehicle(&S.c, f1, w1);
+	zassert_true(mc_ctl_vehicle(&S.c, f1, w1, S.seq++));
 	for (int k = 1; k <= 6; k++) {
 		sim_step(&S);
 		double u = fmin(1.0, k / 5.0);
@@ -497,4 +499,187 @@ ZTEST(ctl, test_input_interpolation)
 		zassert_within(S.c.in_now[2], MC_GRAVITY + (u * 0.5), 1e-12);
 		zassert_within(S.c.in_now[5], u * -0.05, 1e-12);
 	}
+}
+
+/* F12: a host that keeps sending the same frame is not alive. */
+ZTEST(ctl, test_repeated_sequence_number_is_not_a_heartbeat)
+{
+	engage(&S);
+	S.f[0] = 1.0;
+	run(&S, 1.0);
+	zassert_false(S.c.comms_lost);
+	S.repeat_seq = true; /* frames keep coming every 10 ms, all with one seq */
+	double t = 0.0;
+
+	while (!S.c.comms_lost) {
+		sim_step(&S);
+		t += S.c.dt;
+		zassert_true(t < 0.3, "repeated frames kept the heartbeat alive");
+	}
+	TC_PRINT("repeated seq: comms lost after %.0f ms, %u stale samples\n", t * 1e3,
+		 S.c.stale_samples);
+	zassert_true(t > 0.19 && t <= 0.2 + 2 * S.c.dt);
+	zassert_true(S.c.stale_samples >= 19);
+	zassert_equal(S.c.event, MC_FAULT_COMMS_LOST);
+}
+
+/* The sequence number may wrap; it must still advance, and an older one is refused. */
+ZTEST(ctl, test_sequence_number_wraps_and_old_samples_are_refused)
+{
+	const double f[3] = {0.0, 0.0, MC_GRAVITY}, w[3] = {0};
+
+	zassert_true(mc_ctl_vehicle(&S.c, f, w, 65534U)); /* first sample: any seq */
+	zassert_true(mc_ctl_vehicle(&S.c, f, w, 65535U));
+	zassert_true(mc_ctl_vehicle(&S.c, f, w, 0U));     /* wrapped */
+	zassert_false(mc_ctl_vehicle(&S.c, f, w, 0U));    /* repeated */
+	zassert_false(mc_ctl_vehicle(&S.c, f, w, 65000U)); /* older */
+	zassert_true(mc_ctl_vehicle(&S.c, f, w, 3U));     /* a gap is fine */
+	zassert_equal(S.c.stale_samples, 2U);
+}
+
+/* The firmware refuses to move if its task watchdog did not start. */
+ZTEST(ctl, test_inhibit_refuses_enable)
+{
+	run(&S, 0.01);
+	mc_ctl_inhibit(&S.c, true);
+	zassert_equal(mc_ctl_command(&S.c, MC_CMD_ENABLE), MC_CST_BAD_STATE);
+	zassert_equal(S.c.state, MC_ST_OFF);
+	run(&S, 0.1);
+	zassert_false(S.cmd.on, "servos must stay off");
+	mc_ctl_inhibit(&S.c, false);
+	zassert_equal(mc_ctl_command(&S.c, MC_CMD_ENABLE), MC_CST_OK);
+}
+
+/*
+ * A stop point clamped to the soft limit can sit a few um short of where the
+ * shaper is able to land exactly (it brakes for |e| - a dt^2 / 8). The stop
+ * ends on a tolerance, not on exact equality, so it cannot hang there.
+ */
+ZTEST(ctl, test_stop_ends_on_a_tolerance)
+{
+	engage(&S);
+	S.c.sp[0] = S.g.soft_hi - 2e-6;
+	S.c.sp_vel[0] = 0.0;
+	int k;
+
+	for (k = 0; k < 50; k++) {
+		mc_ctl_step(&S.c, &S.b.fb, k == 0, false, &S.cmd); /* E-stop on the first step */
+		if (S.c.phase != MC_PH_STOP) {
+			break;
+		}
+	}
+	TC_PRINT("clamped stop point: stop ended after %d steps, leg 1 %.1f um from it\n", k + 1,
+		 (S.c.stop_target[0] - S.c.sh.pos[0]) * 1e6);
+	zassert_equal(S.c.state, MC_ST_ESTOP);
+	zassert_equal(S.c.phase, MC_PH_DWELL);
+	zassert_equal(S.c.stop_target[0], S.g.soft_hi, "stop point clamped to the soft limit");
+	zassert_true(S.c.sh.pos[0] != S.c.stop_target[0], "exact equality would never come");
+}
+
+/* A stop that does not finish within 0.5 s while PARKING raises a FAULT and descends. */
+ZTEST(ctl, test_stop_timeout_while_parking_faults)
+{
+	engage(&S);
+	S.f[1] = 3.0;
+	run(&S, 0.3);
+	zassert_equal(mc_ctl_command(&S.c, MC_CMD_PARK), MC_CST_OK);
+	zassert_equal(S.c.phase, MC_PH_STOP);
+	S.c.sh.lim.a_max = 0.001; /* a broken stop: it would take seconds */
+	double t = run_until(&S, MC_ST_FAULT, 0.6);
+
+	TC_PRINT("stop timeout: FAULT %s after %.0f ms\n", mc_fault_name(S.c.fault), t * 1e3);
+	zassert_equal(S.c.fault, MC_FAULT_INTERNAL);
+	zassert_true(t > 0.5);
+	while (S.c.phase != MC_PH_TRAJ) { /* the FAULT stop (normal limits), then the standstill */
+		sim_step(&S);
+		zassert_true(S.t < 30.0, "no descent");
+	}
+	S.max_speed = 0.0;
+	while (!S.c.descended) {
+		sim_step(&S);
+		zassert_true(S.t < 30.0, "no descent");
+	}
+	zassert_true(S.max_speed <= 0.05, "descent %g m/s", S.max_speed);
+	zassert_true(max_leg_error(&S, S.c.p.park) < 1e-3);
+}
+
+/* While halting, a second leg that seizes is reported and released too. */
+ZTEST(ctl, test_second_leg_trip_during_descent)
+{
+	engage(&S);
+	S.f[1] = 3.0; /* the legs must move for a seized one to fall behind */
+	run(&S, 0.3);
+	S.pl[2].stuck = true;
+	(void)run_until(&S, MC_ST_FAULT, 3.0);
+	zassert_equal(S.c.fault, MC_FAULT_FOLLOWING);
+	zassert_equal(S.c.fault_leg, 2);
+	uint32_t events = S.c.event_count;
+
+	while (S.c.phase != MC_PH_TRAJ) { /* stop and standstill done: the descent starts */
+		sim_step(&S);
+		zassert_true(S.t < 10.0);
+	}
+	run(&S, 0.2);
+	S.pl[4].stuck = true;
+	double t = 0.0;
+
+	while (S.c.event_count == events) {
+		sim_step(&S);
+		t += S.c.dt;
+		zassert_true(t < 1.0, "second trip never reported");
+	}
+	run(&S, 0.05);
+	TC_PRINT("second seized leg: %s on leg %d reported %.0f ms later; %.2f A on it\n",
+		 mc_fault_name(S.c.event), S.c.event_leg + 1, t * 1e3, S.b.fb.current[4]);
+	/* early in the slow descent the current monitor (500 ms) can beat the 5 mm error */
+	zassert_true((S.c.event == MC_FAULT_FOLLOWING) || (S.c.event == MC_FAULT_CURRENT));
+	zassert_equal(S.c.event_leg, 4);
+	zassert_equal(S.c.fault, MC_FAULT_FOLLOWING, "the first fault stays latched");
+	zassert_equal(S.c.fault_leg, 2);
+	zassert_true(S.cmd.released[2] && S.cmd.released[4]);
+	zassert_true(fabs(S.b.fb.current[4]) < 5.0, "%g A", S.b.fb.current[4]);
+}
+
+/* While halting, a leg that leaves its hard limits is reported (the fault stays ESTOP). */
+ZTEST(ctl, test_hard_limit_reported_while_halting)
+{
+	engage(&S);
+	S.estop = true;
+	sim_step(&S);
+	zassert_equal(S.c.state, MC_ST_ESTOP);
+	uint32_t events = S.c.event_count;
+
+	S.pl[0].theta = (S.c.p.hard_hi + 0.001 - S.g.l_min) / (S.pl[0].p.lead / (2.0 * MC_PI));
+	sim_step(&S);
+	sim_step(&S);
+	zassert_equal(S.c.event_count, events + 1);
+	zassert_equal(S.c.event, MC_FAULT_HARD_LIMIT);
+	zassert_equal(S.c.event_leg, 0);
+	zassert_equal(S.c.state, MC_ST_ESTOP);
+	zassert_equal(S.c.fault, MC_FAULT_ESTOP);
+}
+
+/* A NaN feed-forward must not become a full-scale current: 0 A and a fault at once. */
+ZTEST(ctl, test_nan_in_the_servo_bank_trips_internal)
+{
+	mc_servo_bank *b = &S.b;
+	mc_servo_cmd cmd = {.seq = 1, .on = true};
+	double pos[MC_LEGS], cur[MC_LEGS];
+
+	for (int i = 0; i < MC_LEGS; i++) {
+		pos[i] = S.g.l0;
+		cmd.prev[i] = S.g.l0;
+		cmd.next[i] = S.g.l0;
+		cmd.force[i] = 919.0;
+	}
+	cmd.force[3] = NAN;
+	mc_bank_step(b, &cmd, pos, cur);
+	zassert_equal(cur[3], 0.0);
+	zassert_true(b->axis[3].invalid);
+	zassert_false(b->axis[3].saturated);
+	zassert_equal(b->fb.trip, MC_FAULT_INTERNAL);
+	zassert_equal(b->fb.trip_leg, 3);
+	zassert_equal(b->fb.leg_trip[3], MC_FAULT_INTERNAL);
+	zassert_equal(b->fb.leg_trip[0], 0);
+	zassert_true(isfinite(cur[0]) && (cur[0] > 0.0));
 }

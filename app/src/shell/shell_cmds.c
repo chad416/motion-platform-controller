@@ -146,7 +146,8 @@ static int cmd_timing(const struct shell *sh, size_t argc, char **argv)
 		    t.servo.overruns);
 	shell_print(sh, "TIMING cue cycles=%u min=%uus max=%uus mean=%.1fus overruns=%u",
 		    t.cue.cycles, t.cue.min_us, t.cue.max_us, t.cue.mean_us, t.cue.overruns);
-	shell_print(sh, "vehicle samples=%u dropped=%u", t.vehicle_samples, t.vehicle_dropped);
+	shell_print(sh, "vehicle samples=%u dropped=%u stale=%u", t.vehicle_samples,
+		    t.vehicle_dropped, t.vehicle_stale);
 	return 0;
 }
 

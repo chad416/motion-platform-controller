@@ -36,7 +36,7 @@ jobs:
         run: |
           python3 -m venv "$MOTION_VENV"
           "$MOTION_VENV/bin/pip" install -q --upgrade pip
-          "$MOTION_VENV/bin/pip" install -q west numpy scipy matplotlib cantools python-can
+          "$MOTION_VENV/bin/pip" install -q -r motion-fw/requirements.txt
 
       - name: Cache Zephyr and SDK
         uses: actions/cache@v4
@@ -113,7 +113,7 @@ jobs:
       - name: Integration tests IT01-IT08, IT10 (Robot Framework in Renode)
         run: bash motion-fw/scripts/test-sim.sh --exclude long
 
-      - name: "IT09: 10 minutes of cueing, zero overruns (weekly and manual runs, ~16 min)"
+      - name: "IT09: 10 minutes of cueing, zero overruns (weekly and manual runs, ~11 min)"
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           MOTION_ROBOT_OUT: ${{ github.workspace }}/robot-out-motion-long

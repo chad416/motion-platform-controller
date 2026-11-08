@@ -5,10 +5,6 @@
 
 #include "mcue/platform_config.h"
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 void mc_plant_default_params(mc_plant_params *p, const mc_geometry *g)
 {
 	/* leg angle from vertical at neutral: cos a = h0 / l0 */
@@ -32,7 +28,7 @@ void mc_plant_default_params(mc_plant_params *p, const mc_geometry *g)
 
 static double radius(const mc_plant_params *p)
 {
-	return p->lead / (2.0 * M_PI);
+	return p->lead / (2.0 * MC_PI);
 }
 
 double mc_plant_inertia(const mc_plant_params *p)
@@ -93,7 +89,7 @@ double mc_plant_speed(const mc_plant *pl)
 
 double mc_plant_encoder(const mc_plant *pl)
 {
-	double counts = floor((pl->theta / (2.0 * M_PI)) * pl->p.counts_per_rev);
+	double counts = floor((pl->theta / (2.0 * MC_PI)) * pl->p.counts_per_rev);
 
 	return pl->p.stop_lo + ((counts / pl->p.counts_per_rev) * pl->p.lead);
 }

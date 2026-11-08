@@ -7,10 +7,6 @@
 #include "mcue/platform_config.h"
 #include "mcue/shaping.h"
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 void mc_washout_default_params(mc_washout_params *p)
 {
 	p->rate_hz = MC_CFG_WO_RATE_HZ;
@@ -24,8 +20,8 @@ void mc_washout_default_params(mc_washout_params *p)
 	p->heave_wb = MC_CFG_WO_HEAVE_WB;
 	p->tilt_wn = MC_CFG_WO_TILT_WN;
 	p->tilt_zeta = MC_CFG_WO_TILT_ZETA;
-	p->tilt_rate_limit = MC_CFG_WO_TILT_RATE_LIMIT_DEG_S * (M_PI / 180.0);
-	p->tilt_accel_limit = MC_CFG_WO_TILT_ACCEL_LIMIT_DEG_S2 * (M_PI / 180.0);
+	p->tilt_rate_limit = MC_CFG_WO_TILT_RATE_LIMIT_DEG_S * (MC_PI / 180.0);
+	p->tilt_accel_limit = MC_CFG_WO_TILT_ACCEL_LIMIT_DEG_S2 * (MC_PI / 180.0);
 	p->rot_gain = MC_CFG_WO_ROT_GAIN;
 	p->rot_wn = MC_CFG_WO_ROT_WN;
 	p->rot_zeta = MC_CFG_WO_ROT_ZETA;

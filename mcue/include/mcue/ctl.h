@@ -18,6 +18,12 @@
  * PARKED, plus FAULT and ESTOP. Every fault and the E-stop first stop the legs
  * at the acceleration limit, then descend to park at the descent speed. RESET
  * is accepted only once parked (and with the E-stop released).
+ *
+ * While a FAULT / ESTOP stop and descent run, the first fault stays latched,
+ * but the monitors keep running: a further leg trip (following error, current
+ * saturation, non-finite servo value) or a leg leaving its hard limits is
+ * reported as its own event (FAULT frame), and a leg that tripped its servo
+ * monitor is released (gravity feed-forward only).
  */
 #ifndef MCUE_CTL_H_
 #define MCUE_CTL_H_
@@ -50,6 +56,7 @@ typedef enum {
 	MC_FAULT_HOMING = 5,     /* encoder reading implausible at ENABLE */
 	MC_FAULT_ESTOP = 6,
 	MC_FAULT_COMMS_LOST = 7, /* an event, not a FAULT state: washout, then PARKING */
+	MC_FAULT_INTERNAL = 8,   /* a non-finite servo value, or a stop that did not finish */
 } mc_fault;
 
 typedef enum {
@@ -97,9 +104,10 @@ typedef struct {
 	double pos[MC_LEGS];      /* measured (encoder) */
 	double current[MC_LEGS];  /* commanded, A */
 	double ferr[MC_LEGS];     /* following error, m */
-	int trip;                 /* MC_FAULT_FOLLOWING / MC_FAULT_CURRENT / 0, latched */
+	int trip;                 /* first trip: MC_FAULT_FOLLOWING / _CURRENT / _INTERNAL / 0, latched */
 	int trip_leg;             /* 0..5 */
 	double trip_value;        /* m or A */
+	int leg_trip[MC_LEGS];    /* per leg: its first trip (as `trip`), or 0; latched */
 	uint32_t fault_epoch;     /* the cmd fault_epoch this feedback belongs to */
 } mc_servo_fb;
 
@@ -140,7 +148,7 @@ typedef struct {
 	double mass;             /* payload, kg */
 	mc_vec3 com;             /* payload centre of mass, platform frame */
 	double rate_hz;          /* cueing rate */
-	int input_steps;         /* cueing steps per vehicle sample (500 / 100 Hz) */
+	int input_steps;         /* cueing steps per vehicle sample (cueing rate / 100 Hz) */
 } mc_ctl_params;
 
 typedef enum {
@@ -168,6 +176,7 @@ typedef struct {
 	double sp_acc[MC_LEGS];
 	double stop_target[MC_LEGS];
 	uint32_t dwell_steps;   /* cueing steps left in MC_PH_DWELL */
+	uint32_t stop_steps;    /* cueing steps spent in MC_PH_STOP */
 	mc_servo_cmd cmd;       /* last command sent */
 
 	/* measurements and status */
@@ -184,7 +193,13 @@ typedef struct {
 	int fault_leg;          /* 0..5, or -1 */
 	double fault_value;
 	mc_fault event;         /* last event for the host (fault or COMMS_LOST) */
+	int event_leg;          /* 0..5, or -1 */
+	double event_value;     /* m or A, as fault_value */
 	uint32_t event_count;   /* +1 per event: the firmware sends a FAULT frame */
+	uint8_t trips_seen;     /* FAULT / ESTOP: legs whose servo trip was reported (bit per leg) */
+	uint8_t hard_inside;    /* FAULT / ESTOP: legs seen inside their hard limits */
+	uint8_t hard_seen;      /* FAULT / ESTOP: legs reported outside their hard limits */
+	bool inhibit;           /* ENABLE refused (the firmware's task watchdog is not running) */
 	bool estop;
 	bool comms_lost;
 	bool descended;         /* FAULT / ESTOP: back at park */
@@ -192,7 +207,10 @@ typedef struct {
 	/* vehicle input (f xyz, w xyz) and its interpolation to the cueing rate */
 	double in_from[6], in_to[6], in_now[6];
 	int in_step;
-	uint32_t since_input;   /* cueing steps since the last vehicle sample */
+	uint32_t since_input;   /* cueing steps since the last accepted vehicle sample */
+	bool have_seq;          /* last_seq is valid (cleared on entering ENGAGED) */
+	uint16_t last_seq;      /* sequence number of the last accepted vehicle sample */
+	uint32_t stale_samples; /* vehicle samples refused: sequence number did not advance */
 	uint32_t lost_steps;    /* cueing steps since comms loss */
 	uint32_t steps;
 } mc_ctl;
@@ -206,8 +224,17 @@ bool mc_ctl_init(mc_ctl *c, const mc_geometry *g, const mc_ctl_params *p,
 /* A command from the host or the shell. Returns mc_cmd_status. */
 int mc_ctl_command(mc_ctl *c, mc_cmd cmd);
 
-/* A new vehicle sample (specific force xyz, angular rate xyz). */
-void mc_ctl_vehicle(mc_ctl *c, const double f[3], const double w[3]);
+/*
+ * A new vehicle sample (specific force xyz, angular rate xyz) with its 16-bit
+ * sequence number. The sample counts (and feeds the heartbeat) only if the
+ * sequence number advanced, modulo 2^16, by 1..32767 since the last accepted
+ * one: a host that keeps repeating, or replays, an old frame is not alive.
+ * Returns false (and counts stale_samples) for a refused sample.
+ */
+bool mc_ctl_vehicle(mc_ctl *c, const double f[3], const double w[3], uint16_t seq);
+
+/* While set, ENABLE answers MC_CST_BAD_STATE (the firmware sets it if its task watchdog failed). */
+void mc_ctl_inhibit(mc_ctl *c, bool inhibit);
 
 /*
  * One cueing step. fb: the latest servo feedback; estop: E-stop input

@@ -195,3 +195,43 @@ ZTEST(kin, test_fk_warm_start_meets_spec)
 		zassert_true(info.residual < 1e-9);
 	}
 }
+
+/* fmax() ignores NaN: a NaN leg length must not come back as a converged pose. */
+ZTEST(kin, test_fk_rejects_non_finite_legs)
+{
+	const mc_pose start = {0.01, -0.02, 0.03, 0.01, 0.02, -0.03};
+	double l[MC_LEGS];
+	mc_pose q = start;
+	mc_fk_info info;
+
+	mc_ik(&g, &start, l);
+	l[3] = NAN;
+	zassert_false(mc_fk(&g, l, &q, 30, 1e-9, &info));
+	zassert_false(info.converged);
+	zassert_false(isfinite(info.residual));
+	zassert_true(isfinite(q.x) && isfinite(q.roll) && isfinite(q.yaw), "NaN pose returned");
+	zassert_equal(q.x, start.x, "pose restored to the start");
+	zassert_equal(q.yaw, start.yaw);
+}
+
+/* Leg lengths no pose produces: not converged, whatever the last step was. */
+ZTEST(kin, test_fk_unreachable_legs_not_converged)
+{
+	double l[MC_LEGS];
+	mc_pose q = {0};
+	mc_fk_info info;
+
+	/*
+	 * Every leg 50 mm: the joints of legs 1 and 2 are 0.333 m apart on the base
+	 * and 0.5 m apart on the platform, so 2 x 50 mm of leg cannot bridge them.
+	 */
+	for (int i = 0; i < MC_LEGS; i++) {
+		l[i] = 0.05;
+	}
+	bool ok = mc_fk(&g, l, &q, 30, 1e-9, &info);
+
+	TC_PRINT("unreachable legs: converged %d after %d iterations, residual %.3g m\n", ok,
+		 info.iterations, info.residual);
+	zassert_false(ok);
+	zassert_true(info.residual > 1e-9);
+}

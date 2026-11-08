@@ -1,0 +1,53 @@
+# Builds the browser demo (mcue/ compiled to WebAssembly, web/), checks it
+# headless, and publishes it on GitHub Pages.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mcue/**"
+      - "web/**"
+      - "scripts/build-web.sh"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain (clang wasm32, wasi-libc)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends clang lld wasi-libc libclang-rt-18-dev-wasm32
+
+      - name: Build web/mcue.wasm
+        run: bash scripts/build-web.sh
+
+      - name: Smoke test (start-up, workspace limit, E-stop)
+        run: node web/smoke.mjs
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

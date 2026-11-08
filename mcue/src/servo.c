@@ -5,20 +5,16 @@
 
 #include "mcue/platform_config.h"
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 void mc_servo_design(mc_servo_params *sp, const mc_plant_params *pp, double rate_hz,
 		     double pos_bw_hz, double vel_bw_hz, double integral_ratio, double a_brake)
 {
 	sp->a_brake = a_brake;
-	double r = pp->lead / (2.0 * M_PI);
-	double wv = 2.0 * M_PI * vel_bw_hz;
+	double r = pp->lead / (2.0 * MC_PI);
+	double wv = 2.0 * MC_PI * vel_bw_hz;
 
 	sp->accel_per_amp = (r * pp->kt) / mc_plant_inertia(pp);
 	sp->amp_per_newton = r / (pp->efficiency * pp->kt);
-	sp->kp_pos = 2.0 * M_PI * pos_bw_hz;
+	sp->kp_pos = 2.0 * MC_PI * pos_bw_hz;
 	sp->kp_vel = wv / sp->accel_per_amp;
 	sp->ki_vel = sp->kp_vel * integral_ratio * wv;
 	sp->i_max = pp->i_max;
@@ -39,11 +35,33 @@ void mc_servo_reset(mc_servo *s, const mc_servo_params *p, double pos)
 	s->prev_pos = pos;
 }
 
+/*
+ * A NaN or infinite input (or result) gives no current, clears the integral
+ * and sets `invalid`. Without this, fmin/fmax would turn a NaN into +i_max
+ * with `saturated` false, and the integral would latch at the limit.
+ */
+static double invalid_step(mc_servo *s, double pos)
+{
+	s->invalid = true;
+	s->saturated = false;
+	s->integ = 0.0;
+	s->vel = 0.0;
+	if (isfinite(pos)) {
+		s->prev_pos = pos;
+	}
+	s->current = 0.0;
+	return 0.0;
+}
+
 double mc_servo_step(mc_servo *s, double pos_sp, double vel_sp, double acc_sp, double force_ff,
 		     double pos)
 {
 	const mc_servo_params *p = &s->p;
 
+	if (!isfinite(pos_sp) || !isfinite(vel_sp) || !isfinite(acc_sp) || !isfinite(force_ff) ||
+	    !isfinite(pos) || !isfinite(s->prev_pos)) {
+		return invalid_step(s, pos);
+	}
 	s->vel = (pos - s->prev_pos) / p->dt;
 	s->prev_pos = pos;
 
@@ -65,6 +83,10 @@ double mc_servo_step(mc_servo *s, double pos_sp, double vel_sp, double acc_sp, d
 
 	double i = (p->kp_vel * ev) + s->integ + ff;
 
+	if (!isfinite(i)) {
+		return invalid_step(s, pos);
+	}
+	s->invalid = false;
 	s->saturated = fabs(i) >= p->i_max;
 	i = fmax(-p->i_max, fmin(p->i_max, i));
 	s->current = i;

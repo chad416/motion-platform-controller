@@ -1,6 +1,7 @@
 # West manifest (T2 topology): this repository is the manifest repository.
-# Same Zephyr revision as the S1 trainer firmware, so the STM32H7 Renode
-# Reference Platform board definition and its Renode model match.
+# Zephyr is pinned to one revision (the same as the trainer-weapon-firmware-twin
+# repository), so the STM32H7 Renode Reference Platform board definition and
+# its Renode model match.
 manifest:
   self:
     path: motion-fw

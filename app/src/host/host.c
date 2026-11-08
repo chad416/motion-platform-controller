@@ -63,8 +63,10 @@ static void handle_cmd(const struct can_frame *f)
 
 static int32_t fault_value_units(mc_fault f, double v)
 {
-	/* positions in um, currents in mA */
-	return (int32_t)lround(v * ((f == MC_FAULT_CURRENT) ? 1e3 : 1e6));
+	/* positions in um, currents in mA; a NaN or out-of-range value is sent as 0 */
+	double u = v * ((f == MC_FAULT_CURRENT) ? 1e3 : 1e6);
+
+	return (isfinite(u) && (fabs(u) < 2e9)) ? (int32_t)lround(u) : 0;
 }
 
 static void send_reports(uint16_t seq, uint32_t *last_events)
@@ -78,10 +80,10 @@ static void send_reports(uint16_t seq, uint32_t *last_events)
 		*last_events = s.event_count;
 		const struct proto_fault f = {
 			.code = (uint8_t)s.event,
-			.leg = (uint8_t)((s.event == s.fault) ? (s.fault_leg + 1) : 0),
+			.leg = (uint8_t)(s.event_leg + 1),
 			.state = (uint8_t)s.state,
 			.count = (uint8_t)s.event_count,
-			.value = (s.event == s.fault) ? fault_value_units(s.fault, s.fault_value) : 0,
+			.value = fault_value_units(s.event, s.event_value),
 		};
 
 		(void)canlink_send(PROTO_ID_FAULT, b, proto_encode_fault(&f, b));
@@ -180,7 +182,9 @@ int host_start(void)
 	mc_geometry g;
 
 	mc_geometry_default_params(&gp);
-	(void)mc_geometry_build(&g, &gp);
+	if (!mc_geometry_build(&g, &gp)) {
+		return -EINVAL;
+	}
 	stroke_base = g.l_min;
 
 	(void)k_thread_create(&host_thread, host_stack, K_THREAD_STACK_SIZEOF(host_stack),

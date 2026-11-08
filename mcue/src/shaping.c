@@ -108,7 +108,16 @@ void mc_traj_init(mc_leg_traj *tr, const double start[MC_LEGS], const double end
 		tr->end[i] = end[i];
 		d = fmax(d, fabs(end[i] - start[i]));
 	}
-	tr->T = fmax(t_min, fmax((1.875 * d) / v_max, sqrt((5.7735026919 * d) / a_max)));
+	/*
+	 * Quintic S-curve s(u) = 10u^3 - 15u^4 + 6u^5 over T, u = t/T:
+	 *   peak ds/du   = 30 u^2 (1-u)^2 at u = 1/2               = 15/8
+	 *   peak d2s/du2 = 60 u (1-u)(1-2u) at u = (3 - sqrt 3)/6   = 10/sqrt(3)
+	 * so speed d*15/(8T) <= v_max and acceleration d*10/(sqrt(3) T^2) <= a_max.
+	 */
+	const double peak_vel = 15.0 / 8.0;
+	const double peak_acc = 10.0 / sqrt(3.0);
+
+	tr->T = fmax(t_min, fmax((peak_vel * d) / v_max, sqrt((peak_acc * d) / a_max)));
 	tr->t = 0.0;
 	tr->dt = dt;
 }

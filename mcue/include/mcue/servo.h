@@ -43,6 +43,7 @@ typedef struct {
 	double vel;      /* velocity estimate, m/s */
 	double current;  /* last output, A */
 	bool saturated;  /* last output was at the limit */
+	bool invalid;    /* last step had a NaN / infinite input or result: output 0 A */
 } mc_servo;
 
 /* Design the gains for a plant model. Bandwidths in Hz, rate in Hz. */
@@ -55,7 +56,11 @@ void mc_servo_default_params(mc_servo_params *sp, const mc_plant_params *pp);
 /* Start (or restart) at the measured position: integral cleared. */
 void mc_servo_reset(mc_servo *s, const mc_servo_params *p, double pos);
 
-/* One servo period. Returns the current command (limited). */
+/*
+ * One servo period. Returns the current command (limited). A non-finite input
+ * or result returns 0 A, clears the integral and sets s->invalid; the servo
+ * bank turns that into an INTERNAL fault on the leg.
+ */
 double mc_servo_step(mc_servo *s, double pos_sp, double vel_sp, double acc_sp, double force_ff,
 		     double pos);
 

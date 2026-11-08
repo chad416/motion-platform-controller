@@ -49,7 +49,7 @@
 #define MC_CFG_SAF_ENGAGE_TIME_S         3.0
 #define MC_CFG_SAF_PARK_TIME_S           3.0
 #define MC_CFG_SAF_STOP_DWELL_S          0.25
-#define MC_CFG_SAF_DESCENT_SPEED_M_S     0.05
+#define MC_CFG_SAF_DESCENT_SPEED_M_S     0.045
 #define MC_CFG_SAF_HARD_MARGIN_M         0.005
 #define MC_CFG_SAF_SERVO_MARGIN_M        0.0001
 #define MC_CFG_SAF_FOLLOWING_ERROR_M     0.005

@@ -178,10 +178,11 @@ def _windows(ss, window_ms):
         yield ss[i], ss[j]
 
 
-def max_leg_speed(path, t0_ms, t1_ms, legs="123456", window_ms=500):
-    """Max leg speed (m/s) from LEG_POS frames `window_ms` apart. The 500 ms
-    default keeps the sampling error (see _windows) at 0.4 %, inside the 1 %
-    margin of the 0.05 m/s checks."""
+def max_leg_speed(path, t0_ms, t1_ms, legs="123456", window_ms=100):
+    """Max leg speed (m/s) from LEG_POS frames `window_ms` apart. Over the
+    100 ms default the sampling error (see _windows) is up to about 4 %; the
+    controller commands 0.045 m/s for homing and the descent, 10 % below the
+    0.05 m/s limit, so the checks need no tolerance on top of the limit."""
     ss = [(t, s) for t, s in _strokes(path) if float(t0_ms) <= t <= float(t1_ms)]
     idx = [int(c) - 1 for c in str(legs)]
     best = 0.0

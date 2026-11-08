@@ -4,13 +4,9 @@
 
 #include "mcue/platform_config.h" /* generated from config/platform.json */
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 static double deg2rad(double d)
 {
-	return d * (M_PI / 180.0);
+	return d * (MC_PI / 180.0);
 }
 
 void mc_geometry_default_params(mc_geometry_params *p)

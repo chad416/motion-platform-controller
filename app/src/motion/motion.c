@@ -1,5 +1,6 @@
 #include "motion.h"
 
+#include <math.h>
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -42,10 +43,14 @@ static struct k_timer servo_timer;
 
 static mc_geometry geo;
 static mc_ctl ctl;           /* cue thread, under ctl_lock */
-static mc_servo_bank bank;   /* servo thread, under xlock */
+static mc_servo_bank bank;   /* servo thread only */
 static struct k_spinlock xlock;
 static mc_servo_cmd xcmd;    /* cue -> servo */
 static mc_servo_fb xfb;      /* servo -> cue */
+static struct {              /* servo -> shell: tracking statistics */
+	double sum2[MC_LEGS], peak[MC_LEGS];
+	uint32_t n;
+} xtrack;
 
 static atomic_t estop_in;
 
@@ -55,7 +60,7 @@ struct loop_stats {
 };
 
 static struct loop_stats servo_st, cue_st; /* written by their own thread */
-static uint32_t vehicle_samples, vehicle_dropped;
+static uint32_t vehicle_samples, vehicle_dropped, vehicle_stale;
 
 static void stats_add(struct loop_stats *s, uint32_t us, bool overrun)
 {
@@ -90,13 +95,23 @@ static void servo_main(void *p1, void *p2, void *p3)
 		(void)k_sem_take(&servo_sem, K_FOREVER);
 		uint32_t t0 = k_cycle_get_32();
 		double pos[MC_LEGS], cur[MC_LEGS];
+		mc_servo_cmd cmd;
 
 		act_read(pos);
 
+		/* only the copies run under the lock; the servo step runs outside it */
 		k_spinlock_key_t key = k_spin_lock(&xlock);
 
-		mc_bank_step(&bank, &xcmd, pos, cur);
+		cmd = xcmd;
+		k_spin_unlock(&xlock, key);
+
+		mc_bank_step(&bank, &cmd, pos, cur);
+
+		key = k_spin_lock(&xlock);
 		xfb = bank.fb;
+		(void)memcpy(xtrack.sum2, bank.sum2, sizeof(xtrack.sum2));
+		(void)memcpy(xtrack.peak, bank.peak, sizeof(xtrack.peak));
+		xtrack.n = bank.n;
 		k_spin_unlock(&xlock, key);
 
 		act_write(cur);
@@ -150,8 +165,12 @@ static void take_vehicle_frames(void)
 		}
 		if (pend.have_f && pend.have_w) {
 			if (pend.seq_f == pend.seq_w) {
-				mc_ctl_vehicle(&ctl, pend.f, pend.w);
-				vehicle_samples++;
+				/* a repeated or old sequence number is not a sign of life */
+				if (mc_ctl_vehicle(&ctl, pend.f, pend.w, pend.seq_f)) {
+					vehicle_samples++;
+				} else {
+					vehicle_stale++;
+				}
 				pend.have_f = false;
 				pend.have_w = false;
 			} else if ((int16_t)(pend.seq_f - pend.seq_w) > 0) {
@@ -175,7 +194,7 @@ static void report_changes(mc_state *last_state, uint32_t *last_events)
 			LOG_WRN("EVENT COMMS_LOST");
 		} else {
 			LOG_WRN("FAULT %s leg=%d value=%d", mc_fault_name(ctl.event),
-				ctl.fault_leg + 1, (int)(ctl.fault_value * 1e6));
+				ctl.event_leg + 1, (int)(ctl.event_value * 1e6));
 		}
 	}
 	if (ctl.state != *last_state) {
@@ -227,7 +246,7 @@ static void cue_main(void *p1, void *p2, void *p3)
 
 /* ---- API ----------------------------------------------------------------- */
 
-int motion_start(void)
+int motion_start(bool watchdog_ok)
 {
 	mc_geometry_params gp;
 	mc_ctl_params cp;
@@ -250,7 +269,15 @@ int motion_start(void)
 	mc_plant_default_params(&pp, &geo);
 	mc_servo_default_params(&sp, &pp);
 	mc_bank_init(&bank, &sp, &cp);
-	(void)act_init(&geo);
+	if (act_init(&geo) != 0) {
+		LOG_ERR("actuator HAL init failed");
+		return -EIO;
+	}
+	if (!watchdog_ok) {
+		/* without the task watchdog a stalled loop would go unnoticed: never move */
+		mc_ctl_inhibit(&ctl, true);
+		LOG_ERR("task watchdog not running: ENABLE refused");
+	}
 
 	/* first feedback: the encoders as they are */
 	act_read(pos);
@@ -309,6 +336,8 @@ void motion_get_status(struct motion_status *o)
 	o->fault_leg = ctl.fault_leg;
 	o->fault_value = ctl.fault_value;
 	o->event = ctl.event;
+	o->event_leg = ctl.event_leg;
+	o->event_value = ctl.event_value;
 	o->event_count = ctl.event_count;
 	o->estop = ctl.estop;
 	o->comms_lost = ctl.comms_lost;
@@ -349,6 +378,7 @@ void motion_get_timing(struct motion_timing *out)
 	loop_timing(&cue_st, &out->cue);
 	out->vehicle_samples = vehicle_samples;
 	out->vehicle_dropped = vehicle_dropped;
+	out->vehicle_stale = vehicle_stale;
 }
 
 void motion_reset_timing(void)
@@ -359,11 +389,19 @@ void motion_reset_timing(void)
 
 void motion_get_tracking(double rms[MC_LEGS], double peak[MC_LEGS], uint32_t *samples)
 {
+	double sum2[MC_LEGS];
+	uint32_t n;
 	k_spinlock_key_t key = k_spin_lock(&xlock);
 
-	mc_bank_tracking(&bank, rms, peak);
-	*samples = bank.n;
+	(void)memcpy(sum2, xtrack.sum2, sizeof(sum2));
+	(void)memcpy(peak, xtrack.peak, sizeof(xtrack.peak));
+	n = xtrack.n;
 	k_spin_unlock(&xlock, key);
+
+	for (int i = 0; i < MC_LEGS; i++) {
+		rms[i] = (n > 0U) ? sqrt(sum2[i] / n) : 0.0;
+	}
+	*samples = n;
 }
 
 void motion_reset_tracking(void)

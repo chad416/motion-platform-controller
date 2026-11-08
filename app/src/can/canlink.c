@@ -19,6 +19,7 @@ LOG_MODULE_REGISTER(canlink, LOG_LEVEL_INF);
 #define TX_PRIO           4
 #define TX_WAIT           K_MSEC(100)
 #define TX_WDT_TIMEOUT_MS 1000U
+#define CLASSIC_CAN_MAX_LEN 8U /* bytes; the controller sends classic CAN frames only */
 
 static const struct device *const can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
 
@@ -146,11 +147,15 @@ int canlink_init(void)
 
 int canlink_send(uint16_t id, const uint8_t *data, uint8_t len)
 {
-	struct can_frame f = {.id = id, .dlc = can_bytes_to_dlc(len), .flags = 0};
+	struct can_frame f = {.id = id, .flags = 0};
 
+	if (len > CLASSIC_CAN_MAX_LEN) {
+		return -EINVAL;
+	}
 	if (!link_up) {
 		return -ENETDOWN;
 	}
+	f.dlc = can_bytes_to_dlc(len);
 	(void)memcpy(f.data, data, len);
 	if (k_msgq_put(&tx_q, &f, K_NO_WAIT) != 0) {
 		atomic_inc(&tx_overflows);

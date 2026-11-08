@@ -7,11 +7,7 @@
 #include "mcue/platform_config.h"
 #include "mcue/workspace.h"
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-#define DEG (M_PI / 180.0)
+#define DEG (MC_PI / 180.0)
 
 /* Comms loss: the washout is "back at neutral" inside these bounds. */
 #define NEUTRAL_POS_M   0.005
@@ -26,6 +22,18 @@
 #define FK_ITER      6
 #define FK_ITER_COLD 30
 #define FK_TOL       1e-9
+
+/* VEHICLE_F / VEHICLE_W rate (SPEC F09); the cueing loop interpolates between samples. */
+#define VEHICLE_RATE_HZ 100.0
+
+/*
+ * The braking stop has ended when every leg is this close to rest at its
+ * stop point. It must end within STOP_TIMEOUT_S (the P06 standstill bound);
+ * past that the controller stops waiting (see the MC_PH_STOP case).
+ */
+#define STOP_POS_TOL_M   1e-5
+#define STOP_VEL_TOL_M_S 1e-4
+#define STOP_TIMEOUT_S   0.5
 
 void mc_ctl_default_params(mc_ctl_params *p, const mc_geometry *g)
 {
@@ -50,7 +58,7 @@ void mc_ctl_default_params(mc_ctl_params *p, const mc_geometry *g)
 	p->com.y = MC_CFG_PAYLOAD_COM_Y_M;
 	p->com.z = MC_CFG_PAYLOAD_COM_Z_M;
 	p->rate_hz = MC_CFG_WO_RATE_HZ;
-	p->input_steps = 5;
+	p->input_steps = (int)lround(MC_CFG_WO_RATE_HZ / VEHICLE_RATE_HZ);
 }
 
 static void rest_input(double in[6])
@@ -70,6 +78,7 @@ static void reset_input(mc_ctl *c)
 	rest_input(c->in_now);
 	c->in_step = c->p.input_steps;
 	c->since_input = 0U;
+	c->have_seq = false; /* the first sample after this starts the sequence */
 }
 
 bool mc_ctl_init(mc_ctl *c, const mc_geometry *g, const mc_ctl_params *p,
@@ -83,6 +92,7 @@ bool mc_ctl_init(mc_ctl *c, const mc_geometry *g, const mc_ctl_params *p,
 	c->state = MC_ST_OFF;
 	c->phase = MC_PH_OFF;
 	c->fault_leg = -1;
+	c->event_leg = -1;
 	c->ws_scale = 1.0;
 	reset_input(c);
 
@@ -103,7 +113,8 @@ const char *mc_state_name(mc_state s)
 const char *mc_fault_name(mc_fault f)
 {
 	static const char *const names[] = {"NONE",    "FOLLOWING", "HARD_LIMIT", "CURRENT",
-					    "OVERRUN", "HOMING",    "ESTOP",      "COMMS_LOST"};
+					    "OVERRUN", "HOMING",    "ESTOP",      "COMMS_LOST",
+					    "INTERNAL"};
 
 	return ((unsigned)f < (sizeof(names) / sizeof(names[0]))) ? names[f] : "?";
 }
@@ -128,19 +139,37 @@ static void start_stop(mc_ctl *c)
 		c->stop_target[i] = mc_limit2_stop_point(c->sp[i], c->sp_vel[i], &lim);
 		c->sh.prev[i] = c->stop_target[i];
 	}
+	c->stop_steps = 0U;
 	c->phase = MC_PH_STOP;
 }
 
-static void set_event(mc_ctl *c, mc_fault f)
+static void set_event(mc_ctl *c, mc_fault f, int leg, double value)
 {
 	c->event = f;
+	c->event_leg = leg;
+	c->event_value = value;
 	c->event_count++;
+}
+
+static bool halting(mc_state s)
+{
+	return (s == MC_ST_FAULT) || (s == MC_ST_ESTOP);
+}
+
+static bool servo_trip(mc_fault f)
+{
+	return (f == MC_FAULT_FOLLOWING) || (f == MC_FAULT_CURRENT) || (f == MC_FAULT_INTERNAL);
+}
+
+static bool inside_hard(const mc_ctl *c, int i)
+{
+	return (c->meas[i] >= c->p.hard_lo) && (c->meas[i] <= c->p.hard_hi);
 }
 
 /* FAULT or ESTOP: stop, then descend to park. */
 static void halt(mc_ctl *c, mc_state st, mc_fault f, int leg, double value)
 {
-	if ((c->state == MC_ST_FAULT) || (c->state == MC_ST_ESTOP)) {
+	if (halting(c->state)) {
 		/* already halting: an E-stop overrides the state, the first fault stays */
 		if (st == MC_ST_ESTOP) {
 			c->state = MC_ST_ESTOP;
@@ -153,7 +182,16 @@ static void halt(mc_ctl *c, mc_state st, mc_fault f, int leg, double value)
 	c->fault_value = value;
 	c->descended = false;
 	c->comms_lost = false;
-	set_event(c, f);
+	/* the monitors that keep running while halting (monitor_halt) start from here */
+	c->trips_seen = ((leg >= 0) && servo_trip(f)) ? (uint8_t)(1U << leg) : 0U;
+	c->hard_inside = 0U;
+	c->hard_seen = 0U;
+	for (int i = 0; i < MC_LEGS; i++) {
+		if (inside_hard(c, i)) {
+			c->hard_inside |= (uint8_t)(1U << i);
+		}
+	}
+	set_event(c, f, leg, value);
 	if (c->phase != MC_PH_OFF) {
 		start_stop(c);
 	}
@@ -230,12 +268,16 @@ int mc_ctl_command(mc_ctl *c, mc_cmd cmd)
 		if (c->estop) {
 			return MC_CST_ESTOP;
 		}
+		if (c->inhibit) {
+			return MC_CST_BAD_STATE;
+		}
+		/* encoder plausibility: checked here only, before the servos first move */
 		if (!legs_plausible(c)) {
 			c->state = MC_ST_FAULT;
 			c->fault = MC_FAULT_HOMING;
 			c->fault_leg = -1;
 			c->descended = true; /* never moved: nothing to descend */
-			set_event(c, MC_FAULT_HOMING);
+			set_event(c, MC_FAULT_HOMING, -1, 0.0);
 			return MC_CST_OK;
 		}
 		(void)memcpy(c->sp, c->meas, sizeof(c->sp));
@@ -296,8 +338,21 @@ int mc_ctl_command(mc_ctl *c, mc_cmd cmd)
 	}
 }
 
-void mc_ctl_vehicle(mc_ctl *c, const double f[3], const double w[3])
+void mc_ctl_inhibit(mc_ctl *c, bool inhibit)
 {
+	c->inhibit = inhibit;
+}
+
+bool mc_ctl_vehicle(mc_ctl *c, const double f[3], const double w[3], uint16_t seq)
+{
+	uint16_t advance = (uint16_t)(seq - c->last_seq);
+
+	if (c->have_seq && ((advance == 0U) || (advance >= 0x8000U))) {
+		c->stale_samples++;
+		return false; /* repeated or older: not a sign of life */
+	}
+	c->have_seq = true;
+	c->last_seq = seq;
 	(void)memcpy(c->in_from, c->in_now, sizeof(c->in_from));
 	for (int k = 0; k < 3; k++) {
 		c->in_to[k] = f[k];
@@ -305,6 +360,7 @@ void mc_ctl_vehicle(mc_ctl *c, const double f[3], const double w[3])
 	}
 	c->in_step = 0;
 	c->since_input = 0U;
+	return true;
 }
 
 /* ---- step ---------------------------------------------------------------- */
@@ -315,10 +371,44 @@ static bool active(mc_state s)
 	       (s == MC_ST_ENGAGED) || (s == MC_ST_PARKING);
 }
 
+/*
+ * FAULT / ESTOP: the first fault stays latched, but the servo trips and the
+ * hard limits are still watched. Each further leg trip is reported once (and
+ * the leg is released in mc_ctl_step); a leg that was inside its hard limits
+ * and leaves them is reported once. Loop overruns are not re-reported.
+ */
+static void monitor_halt(mc_ctl *c, const mc_servo_fb *fb)
+{
+	if (c->phase == MC_PH_OFF) {
+		return; /* servos off (implausible encoder at ENABLE): nothing moves */
+	}
+	for (int i = 0; i < MC_LEGS; i++) {
+		const uint8_t bit = (uint8_t)(1U << i);
+		const int code = fb->leg_trip[i];
+
+		if ((code != 0) && (fb->fault_epoch == c->cmd.fault_epoch) &&
+		    ((c->trips_seen & bit) == 0U)) {
+			c->trips_seen |= bit;
+			set_event(c, (mc_fault)code, i,
+				  (code == (int)MC_FAULT_FOLLOWING) ? fb->ferr[i] : fb->current[i]);
+		}
+		if (inside_hard(c, i)) {
+			c->hard_inside |= bit;
+		} else if (((c->hard_inside & bit) != 0U) && ((c->hard_seen & bit) == 0U)) {
+			c->hard_seen |= bit;
+			set_event(c, MC_FAULT_HARD_LIMIT, i, c->meas[i]);
+		}
+	}
+}
+
 static void check_faults(mc_ctl *c, const mc_servo_fb *fb, bool overrun)
 {
 	if (c->estop && (c->state != MC_ST_OFF) && (c->state != MC_ST_ESTOP)) {
 		halt(c, MC_ST_ESTOP, MC_FAULT_ESTOP, -1, 0.0);
+		return;
+	}
+	if (halting(c->state)) {
+		monitor_halt(c, fb);
 		return;
 	}
 	if (!active(c->state)) {
@@ -337,7 +427,7 @@ static void check_faults(mc_ctl *c, const mc_servo_fb *fb, bool overrun)
 		return; /* homing starts on the lower end stop, below the hard limit */
 	}
 	for (int i = 0; i < MC_LEGS; i++) {
-		if ((c->meas[i] < c->p.hard_lo) || (c->meas[i] > c->p.hard_hi)) {
+		if (!inside_hard(c, i)) { /* also catches a NaN reading */
 			halt(c, MC_ST_FAULT, MC_FAULT_HARD_LIMIT, i, c->meas[i]);
 			return;
 		}
@@ -358,7 +448,7 @@ static void cue(mc_ctl *c, double sp[MC_LEGS], double acc[MC_LEGS])
 	if (!c->comms_lost && ((c->since_input * c->dt) > c->p.heartbeat_timeout)) {
 		c->comms_lost = true;
 		c->lost_steps = 0U;
-		set_event(c, MC_FAULT_COMMS_LOST);
+		set_event(c, MC_FAULT_COMMS_LOST, -1, 0.0);
 		(void)memcpy(c->in_from, c->in_now, sizeof(c->in_from));
 		rest_input(c->in_to);
 		c->in_step = 0;
@@ -437,13 +527,31 @@ void mc_ctl_step(mc_ctl *c, const mc_servo_fb *fb, bool estop, bool overrun, mc_
 		}
 		break;
 	case MC_PH_STOP: {
+		if ((c->stop_steps * c->dt) > STOP_TIMEOUT_S) {
+			/*
+			 * The stop should take at most leg_speed / leg_accel (83 ms).
+			 * PARKING: raise a FAULT, which restarts the stop from the
+			 * setpoints. FAULT / ESTOP: keep the latched fault and go on
+			 * to the standstill and the descent. Either way hold the
+			 * setpoint for this step.
+			 */
+			if (c->state == MC_ST_PARKING) {
+				halt(c, MC_ST_FAULT, MC_FAULT_INTERNAL, -1, 0.0);
+			} else {
+				stop_done(c);
+			}
+			break;
+		}
+		c->stop_steps++;
+
 		bool done = true;
 
 		mc_shaper_step(&c->sh, c->stop_target);
 		for (int i = 0; i < MC_LEGS; i++) {
 			sp[i] = c->sh.pos[i];
 			acc[i] = c->sh.acc[i];
-			done = done && (c->sh.vel[i] == 0.0) && (c->sh.pos[i] == c->stop_target[i]);
+			done = done && (fabs(c->sh.vel[i]) <= STOP_VEL_TOL_M_S) &&
+			       (fabs(c->sh.pos[i] - c->stop_target[i]) <= STOP_POS_TOL_M);
 		}
 		if (done) {
 			stop_done(c);
@@ -463,17 +571,22 @@ void mc_ctl_step(mc_ctl *c, const mc_servo_fb *fb, bool estop, bool overrun, mc_
 	}
 
 	/*
-	 * A leg that tripped its own monitor (seized, or too weak for the load) is
-	 * released: its setpoint follows the measurement, so the servo no longer
-	 * fights it at full current while the others descend.
+	 * A leg that tripped its own following-error or current monitor (seized,
+	 * or too weak for the load) is released while halting: its setpoint
+	 * follows the measurement, so the servo no longer fights it at full
+	 * current while the others descend. This covers the first trip and any
+	 * later one during the descent.
 	 */
-	int released = -1;
+	bool released[MC_LEGS];
+	const bool halt_now = halting(c->state) && (fb->fault_epoch == c->cmd.fault_epoch);
 
-	if (((c->state == MC_ST_FAULT) || (c->state == MC_ST_ESTOP)) && (c->fault_leg >= 0) &&
-	    ((c->fault == MC_FAULT_FOLLOWING) || (c->fault == MC_FAULT_CURRENT))) {
-		released = c->fault_leg;
-		sp[released] = c->meas[released];
-		acc[released] = 0.0;
+	for (int i = 0; i < MC_LEGS; i++) {
+		released[i] = halt_now && ((fb->leg_trip[i] == (int)MC_FAULT_FOLLOWING) ||
+					   (fb->leg_trip[i] == (int)MC_FAULT_CURRENT));
+		if (released[i]) {
+			sp[i] = c->meas[i];
+			acc[i] = 0.0;
+		}
 	}
 
 	for (int i = 0; i < MC_LEGS; i++) {
@@ -492,7 +605,7 @@ void mc_ctl_step(mc_ctl *c, const mc_servo_fb *fb, bool estop, bool overrun, mc_
 		cmd->next[i] = sp[i];
 		cmd->acc[i] = acc[i];
 		cmd->force[i] = c->force[i];
-		cmd->released[i] = i == released;
+		cmd->released[i] = released[i];
 	}
 	*out = *cmd;
 }
@@ -597,6 +710,9 @@ void mc_bank_init(mc_servo_bank *b, const mc_servo_params *sp, const mc_ctl_para
 
 static void trip(mc_servo_bank *b, mc_fault f, int leg, double value)
 {
+	if (b->fb.leg_trip[leg] == 0) {
+		b->fb.leg_trip[leg] = (int)f;
+	}
 	if (b->fb.trip == 0) {
 		b->fb.trip = (int)f;
 		b->fb.trip_leg = leg;
@@ -615,6 +731,7 @@ void mc_bank_step(mc_servo_bank *b, const mc_servo_cmd *cmd, const double pos[MC
 		b->fb.trip = 0;
 		b->fb.trip_leg = -1;
 		b->fb.trip_value = 0.0;
+		(void)memset(b->fb.leg_trip, 0, sizeof(b->fb.leg_trip));
 		(void)memset(b->ferr_ticks, 0, sizeof(b->ferr_ticks));
 		(void)memset(b->sat_ticks, 0, sizeof(b->sat_ticks));
 	}
@@ -669,6 +786,10 @@ void mc_bank_step(mc_servo_bank *b, const mc_servo_cmd *cmd, const double pos[MC
 		current[i] = mc_servo_step(&b->axis[i], sp, vel, cmd->acc[i], cmd->force[i], pos[i]);
 		b->fb.current[i] = current[i];
 		b->fb.ferr[i] = e;
+		if (b->axis[i].invalid) {
+			/* NaN / infinite setpoint, measurement or feed-forward: 0 A and a fault at once */
+			trip(b, MC_FAULT_INTERNAL, i, 0.0);
+		}
 
 		b->ferr_ticks[i] = (fabs(e) > b->ferr_max) ? (b->ferr_ticks[i] + 1) : 0;
 		if (b->ferr_ticks[i] >= b->ferr_ticks_max) {

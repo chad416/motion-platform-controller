@@ -58,7 +58,7 @@
     "engage_time_s": 3.0,
     "park_time_s": 3.0,
     "stop_dwell_s": 0.25,
-    "descent_speed_m_s": 0.05,
+    "descent_speed_m_s": 0.045,
     "hard_margin_m": 0.005,
     "servo_margin_m": 0.0001,
     "following_error_m": 0.005,

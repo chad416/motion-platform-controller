@@ -22,7 +22,7 @@ IT01 Boot Is Off Then Homes To Park
     Wait For Line On Uart       STATE PARKED    timeout=2
     Advance                     0.3
     Shell                       motion version
-    Wait For Line On Uart       motion_fw 0.3.0
+    Wait For Line On Uart       motion_fw 0.4.0
     # F14 diagnostics: every shell report answers
     Shell                       motion status
     Wait For Line On Uart       content=state=PARKED phase=
@@ -52,7 +52,7 @@ IT01 Boot Is Off Then Homes To Park
         Should Be Near          ${v}    ${SOFT_LO_MM}    0.02    parked stroke (mm)
     END
     ${v}=                       Max Leg Speed    ${p}    0    ${t_end}
-    Should Be True              ${v} <= 0.0505    homing speed ${v} m/s
+    Should Be True              ${v} <= 0.05    homing speed ${v} m/s
     Log                         homing max leg speed ${v} m/s
 
 IT02 Engage To Neutral And Park
@@ -166,14 +166,14 @@ IT06 Estop Stops Then Descends
     Advance                     0.1
     ${t_end}=                   Virtual Time Ms
     ${p}=                       Dump Frames    it06
-    ${v0}=                      Max Leg Speed    ${p}    ${{ $tp - 300 }}    ${tp}    window_ms=100
+    ${v0}=                      Max Leg Speed    ${p}    ${{ $tp - 300 }}    ${tp}
     Should Be True              ${v0} > 0.02    legs were not moving at the E-stop (${v0} m/s)
     ${ts}=                      Standstill Time    ${p}    ${tp}
     Log                         E-stop at ${v0} m/s: standstill after ${{ $ts - $tp }} ms
     Should Be True              0 < ${ts} - ${tp} <= 500    standstill after ${{ $ts - $tp }} ms
     ${vd}=                      Max Leg Speed    ${p}    ${ts}    ${{ $ts + 7000 }}
     Log                         descent max leg speed ${vd} m/s
-    Should Be True              ${vd} <= 0.0505    descent ${vd} m/s
+    Should Be True              ${vd} <= 0.05    descent ${vd} m/s
     ${f}=                       Fault Frames    ${p}
     ${code}=                    Evaluate    $f[0].split()[1:4]
     Should Be Equal             ${code}    ${{["6", "0", "7"]}}    FAULT frame: ESTOP, no leg, state ESTOP
@@ -248,7 +248,7 @@ IT08 Seized Leg Faults And Descends
     ${p}=                       Dump Frames    it08
     ${vd}=                      Max Leg Speed    ${p}    ${tf}    ${{ $tf + 7000 }}    12456
     Log                         descent max speed (legs 1, 2, 4, 5, 6) ${vd} m/s
-    Should Be True              ${vd} <= 0.0505
+    Should Be True              ${vd} <= 0.05
     ${f}=                       Fault Frames    ${p}
     ${code}=                    Evaluate    $f[0].split()[1:3]
     Should Be Equal             ${code}    ${{["1", "3"]}}    FAULT frame: FOLLOWING on leg 3
@@ -260,7 +260,7 @@ IT09 Ten Minutes Of Cueing Without Overruns
     [Documentation]    P01: 600 s of virtual time ENGAGED, playing all seven scenarios in turn
     ...                (including the 3 g cue, where the workspace bisection runs every step):
     ...                zero servo and cueing overruns, worst cycle times inside their periods,
-    ...                no fault, no lost vehicle sample, no lost STATUS frame. About 16 min wall.
+    ...                no fault, no lost vehicle sample, no lost STATUS frame. About 11 min wall.
     Boot
     Engage
     ${names}=                   Create List    launch    braking    lane_change    cornering
@@ -296,6 +296,7 @@ IT09 Ten Minutes Of Cueing Without Overruns
     ${n}=                       Frame Count    ${p}    0x181
     Log                         ${n} STATUS frames over ${{ ($t_end - $t0) / 1000 }} s virtual
     Should Contain              ${lv}[Line]    dropped=0
+    Should Contain              ${lv}[Line]    stale=0
     ${m}=                       Evaluate    int(re.search(r"samples=(\\d+)", $lv["Line"]).group(1))    modules=re
     Should Be True              ${m} >= 60000    only ${m} vehicle samples
 

@@ -20,14 +20,17 @@ void mc_jacobian(const mc_geometry *g, const mc_pose *q, double J[MC_LEGS][6]);
 
 typedef struct {
 	int iterations;
-	double residual; /* max |leg error| after the last iteration, m */
+	double residual; /* max |leg error| after the last iteration, m (HUGE_VAL if not finite) */
 	bool converged;
 } mc_fk_info;
 
 /*
  * Pose from leg lengths by Newton-Raphson, starting from *q (the last pose).
- * Stops when the step is below tol (rad / m) or after max_iter iterations.
- * On a singular Jacobian *q is left at the last good iterate and converged = false.
+ * Iterates until the step is below tol (rad / m), max_iter iterations, or a
+ * singular Jacobian. Converged (the return value) means the leg residual is
+ * below tol too, so a small step at a wrong pose does not count. On a singular
+ * Jacobian *q stays at the iterate reached. A NaN or infinite leg length or
+ * iterate restores *q to the starting pose and reports not converged.
  */
 bool mc_fk(const mc_geometry *g, const double legs[MC_LEGS], mc_pose *q, int max_iter, double tol,
 	   mc_fk_info *info);

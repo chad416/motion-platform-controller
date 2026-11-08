@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>motion-platform-controller · live demo</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>motion-platform-controller <span class="sub">live demo</span></h1>
+  <p>The controller core of this repository (<code>mcue/</code>, plain C) compiled to WebAssembly and
+  running in your browser: classical washout cueing, workspace limiting, inverse and forward kinematics,
+  the safety state machine and six cascaded leg servos at 500 Hz / 1 kHz, driving six simulated
+  actuators. The same C runs in the Zephyr firmware and in the unit tests.
+  <a href="https://github.com/chad416/motion-platform-controller">Source</a></p>
+</header>
+
+<main>
+  <section class="view">
+    <canvas id="platform" width="720" height="520" aria-label="3D view of the platform"></canvas>
+    <div class="hint">Drag to rotate · grey arrow: vehicle specific force (horizontal)</div>
+    <div class="speed">
+      <button id="pause" aria-pressed="false">Pause</button>
+      <button id="slow" aria-pressed="false">¼ speed</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="state-row">
+      <span id="state" class="badge">OFF</span>
+      <span id="fault" class="fault"></span>
+    </div>
+
+    <h2>Controller</h2>
+    <div class="buttons">
+      <button data-cmd="1" title="Home the legs, then PARKED">ENABLE</button>
+      <button data-cmd="2" title="S-curve to neutral, then cueing">ENGAGE</button>
+      <button data-cmd="3" title="Wash out, then S-curve to park">PARK</button>
+      <button data-cmd="4" title="Accepted once parked">RESET</button>
+    </div>
+    <div class="buttons">
+      <button id="estop" class="estop" aria-pressed="false">E-STOP</button>
+      <button id="link" aria-pressed="false" title="Stop the 100 Hz vehicle stream, as if the CAN link were cut">Cut host link</button>
+    </div>
+    <div id="cmdmsg" class="msg" aria-live="polite"></div>
+
+    <h2>Vehicle</h2>
+    <div class="buttons grid">
+      <button data-man="launch">Launch 3 m/s²</button>
+      <button data-man="braking">Emergency braking</button>
+      <button data-man="lane_change">Lane change</button>
+      <button data-man="cornering">Cornering</button>
+      <button data-man="bump">Road bump</button>
+      <button data-man="excessive">Excessive 3 g</button>
+    </div>
+    <p class="keys">Or drive: <kbd>↑</kbd> accelerate · <kbd>↓</kbd> brake · <kbd>←</kbd> <kbd>→</kbd> steer · <kbd>Space</kbd> bump</p>
+
+    <h2>Washout</h2>
+    <label class="slider">Force gain <output id="gain_v"></output>
+      <input id="gain" type="range" min="200" max="1000" step="50"></label>
+    <label class="slider">Tilt rate limit <output id="tilt_v"></output>
+      <input id="tilt" type="range" min="1000" max="6000" step="250"></label>
+
+    <table class="readout">
+      <tr><th>Workspace scale</th><td id="ws"></td></tr>
+      <tr><th>Pitch / roll</th><td id="pr"></td></tr>
+      <tr><th>Surge / sway / heave</th><td id="xyz"></td></tr>
+      <tr><th>Peak leg current</th><td id="cur"></td></tr>
+      <tr><th>Simulated time</th><td id="time"></td></tr>
+    </table>
+  </section>
+
+  <section class="charts">
+    <figure>
+      <figcaption><span id="cue_title">Surge</span> cue: the vehicle's specific force and what the rider on the
+        platform feels (translation plus tilt against gravity)</figcaption>
+      <div class="chart-tabs">
+        <button data-axis="0" aria-pressed="true">Surge (x)</button>
+        <button data-axis="1" aria-pressed="false">Sway (y)</button>
+      </div>
+      <canvas id="chart_surge" width="1100" height="200"></canvas>
+    </figure>
+    <figure>
+      <figcaption>Leg lengths (all six) against the soft limits</figcaption>
+      <canvas id="chart_legs" width="1100" height="200"></canvas>
+    </figure>
+  </section>
+</main>
+
+<footer>
+  WebAssembly module built from <code>mcue/</code> and <code>web/mcue_web.c</code> by
+  <code>scripts/build-web.sh</code> (clang, wasm32, no Emscripten). Simulated actuators and payload;
+  not a safety-rated controller.
+</footer>
+<script src="app.js"></script>
+</body>
+</html>

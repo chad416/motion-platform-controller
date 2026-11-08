@@ -16,7 +16,8 @@
 
 #include "mcue/ctl.h"
 
-int motion_start(void);
+/* watchdog_ok = false: the loops run, but ENABLE is refused (servos stay off). */
+int motion_start(bool watchdog_ok);
 
 /* Commands (mc_cmd) and parameters; return mc_cmd_status. Thread context. */
 int motion_command(mc_cmd cmd);
@@ -35,7 +36,9 @@ struct motion_status {
 	mc_fault fault;
 	int fault_leg;      /* 0..5, -1 */
 	double fault_value;
-	mc_fault event;
+	mc_fault event;     /* last event (FAULT frame) */
+	int event_leg;      /* 0..5, -1 */
+	double event_value;
 	uint32_t event_count;
 	bool estop, comms_lost, descended, ws_saturated, fk_ok;
 	double ws_scale;
@@ -64,6 +67,7 @@ struct motion_timing {
 	struct motion_loop_timing servo, cue;
 	uint32_t vehicle_samples;  /* complete (paired) samples */
 	uint32_t vehicle_dropped;  /* frames that never found their pair */
+	uint32_t vehicle_stale;    /* paired samples refused: sequence number did not advance */
 };
 
 void motion_get_timing(struct motion_timing *out);

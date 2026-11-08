@@ -106,17 +106,22 @@ bool mc_fk(const mc_geometry *g, const double legs[MC_LEGS], mc_pose *q, int max
 	double l[MC_LEGS];
 	double err[MC_LEGS];
 	double dq[6];
+	const mc_pose start = *q;
 	int it = 0;
 	bool done = false;
+	bool finite = true;
 
-	while ((it < max_iter) && !done) {
+	for (int i = 0; i < MC_LEGS; i++) {
+		finite = finite && isfinite(legs[i]);
+	}
+	while (finite && (it < max_iter) && !done) {
 		mc_ik(g, q, l);
 		for (int i = 0; i < MC_LEGS; i++) {
 			err[i] = legs[i] - l[i];
 		}
 		mc_jacobian(g, q, J);
 		if (!mc_solve6(J, err, dq)) {
-			break; /* singular: keep the last good iterate */
+			break; /* singular Jacobian: stop at this iterate */
 		}
 		q->x += dq[0];
 		q->y += dq[1];
@@ -126,26 +131,39 @@ bool mc_fk(const mc_geometry *g, const double legs[MC_LEGS], mc_pose *q, int max
 		q->yaw += dq[5];
 		it++;
 
+		/* fmax() ignores NaN, so test every component explicitly */
 		double step = 0.0;
 
 		for (int k = 0; k < 6; k++) {
+			finite = finite && isfinite(dq[k]);
 			step = fmax(step, fabs(dq[k]));
 		}
 		done = (step < tol);
 	}
 
-	mc_ik(g, q, l);
-	double res = 0.0;
+	double res = HUGE_VAL;
 
-	for (int i = 0; i < MC_LEGS; i++) {
-		res = fmax(res, fabs(legs[i] - l[i]));
+	if (finite) {
+		mc_ik(g, q, l);
+		res = 0.0;
+		for (int i = 0; i < MC_LEGS; i++) {
+			finite = finite && isfinite(l[i]);
+			res = fmax(res, fabs(legs[i] - l[i]));
+		}
 	}
+	if (!finite) {
+		*q = start; /* never hand a NaN pose to the caller */
+		res = HUGE_VAL;
+	}
+	/* a small last step is not enough: the legs must match within tol too */
+	bool ok = finite && (res < tol);
+
 	if (info != NULL) {
 		info->iterations = it;
 		info->residual = res;
-		info->converged = done || (res < tol);
+		info->converged = ok;
 	}
-	return done || (res < tol);
+	return ok;
 }
 
 bool mc_statics(const mc_geometry *g, const mc_pose *q, double mass, const mc_vec3 *com,

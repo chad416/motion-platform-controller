@@ -3,9 +3,7 @@
 #include <math.h>
 #include <string.h>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+#include "mcue/geometry.h" /* MC_PI */
 
 #define F_SCALE     0.002   /* m/s^2 */
 #define W_SCALE     0.0001  /* rad/s */
@@ -184,8 +182,8 @@ uint8_t proto_encode_pose_t(const double xyz[3], uint16_t seq, uint8_t out[PROTO
 
 uint8_t proto_encode_pose_r(const double rpy[3], uint16_t seq, uint8_t out[PROTO_FRAME_LEN])
 {
-	const double deg[3] = {rpy[0] * (180.0 / M_PI), rpy[1] * (180.0 / M_PI),
-			       rpy[2] * (180.0 / M_PI)};
+	const double deg[3] = {rpy[0] * (180.0 / MC_PI), rpy[1] * (180.0 / MC_PI),
+			       rpy[2] * (180.0 / MC_PI)};
 
 	return encode3(deg, ANG_SCALE, seq, out);
 }

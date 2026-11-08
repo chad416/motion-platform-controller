@@ -1,0 +1,11 @@
+# Python packages for the build, the reference checks, the host tools and CI
+# (Zephyr's own Python requirements come from `west packages pip --install`,
+# Renode's test requirements from <renode>/tests/requirements.txt).
+# Unpinned, as CI installs them. Last tested with Python 3.12.3, west 1.5.0,
+# numpy 2.5.4, scipy 1.18.1, matplotlib 3.11.2, cantools 45.1.2, python-can 4.6.1.
+west
+numpy
+scipy
+matplotlib
+cantools
+python-can

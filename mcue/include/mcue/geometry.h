@@ -11,6 +11,9 @@
 
 #define MC_LEGS 6
 
+/* pi for every mcue file: C11 <math.h> does not have to define M_PI */
+#define MC_PI 3.14159265358979323846
+
 typedef struct {
 	double x, y, z;
 } mc_vec3;

@@ -13,7 +13,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 DBC = ROOT / "protocol" / "motion.dbc"
 
 STATES = ["OFF", "HOMING", "PARKED", "ENGAGING", "ENGAGED", "PARKING", "FAULT", "ESTOP"]
-FAULTS = ["NONE", "FOLLOWING", "HARD_LIMIT", "CURRENT", "OVERRUN", "HOMING", "ESTOP", "COMMS_LOST"]
+FAULTS = ["NONE", "FOLLOWING", "HARD_LIMIT", "CURRENT", "OVERRUN", "HOMING", "ESTOP", "COMMS_LOST",
+          "INTERNAL"]
 OPCODES = {"enable": 1, "engage": 2, "park": 3, "reset": 4, "set": 5, "get": 6}
 OPNAMES = {v: k for k, v in OPCODES.items()}
 STATUS = ["OK", "BAD_STATE", "ESTOP", "BAD_KEY", "BAD_VALUE"]

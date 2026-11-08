@@ -4,7 +4,7 @@
  * integers; encoders round to nearest and saturate.
  *
  * CMD / CMD_ACK are ISO-TP (ISO 15765-2) single frames: byte 0 is the PCI
- * (0x0L, L = payload length), as in the S1 trainer firmware.
+ * (0x0L, L = payload length), as in the trainer-weapon-firmware-twin repository.
  *
  * Pure logic, no Zephyr device access: unit-tested on native_sim.
  */

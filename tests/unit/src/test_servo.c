@@ -241,3 +241,32 @@ ZTEST(servo, test_s_curve_tracking)
 	TC_PRINT("tracking: rms %.4f mm, peak %.4f mm\n", sqrt(sum2 / n) * 1e3, worst * 1e3);
 	zassert_true(worst < 0.0005, "peak %g m", worst);
 }
+
+/* fmin/fmax would turn a NaN into the full current limit; the servo outputs 0 A instead. */
+ZTEST(servo, test_non_finite_input_gives_no_current)
+{
+	mc_servo s;
+	const double l = G.l0;
+
+	mc_servo_reset(&s, &SP, l);
+	(void)mc_servo_step(&s, l + 1e-5, 0.0, 0.0, F_NEUTRAL, l); /* wind the integral a bit */
+	zassert_true(s.integ != 0.0);
+
+	const double bad[] = {NAN, INFINITY, -INFINITY};
+
+	for (size_t k = 0; k < ARRAY_SIZE(bad); k++) {
+		zassert_equal(mc_servo_step(&s, bad[k], 0.0, 0.0, F_NEUTRAL, l), 0.0);
+		zassert_true(s.invalid);
+		zassert_false(s.saturated);
+		zassert_equal(s.integ, 0.0);
+		zassert_equal(mc_servo_step(&s, l, 0.0, 0.0, bad[k], l), 0.0, "force");
+		zassert_equal(mc_servo_step(&s, l, 0.0, 0.0, F_NEUTRAL, bad[k]), 0.0, "position");
+		zassert_true(s.invalid);
+	}
+	/* finite again: normal output, the flag clears */
+	double i = mc_servo_step(&s, l, 0.0, 0.0, F_NEUTRAL, l);
+
+	zassert_false(s.invalid);
+	zassert_true(isfinite(i) && (fabs(i) < PP.i_max));
+	zassert_within(i, SP.amp_per_newton * F_NEUTRAL, 1e-9, "gravity feed-forward only");
+}

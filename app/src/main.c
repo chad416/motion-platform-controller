@@ -2,7 +2,7 @@
  * motion_fw: controller for a 6-DOF motion platform (SPEC.md).
  *
  * Start order:
- *  1. reset reason + task watchdog
+ *  1. reset reason + task watchdog (if it fails, ENABLE is refused)
  *  2. motion loops (servos off: the controller starts in OFF)
  *  3. CAN and the host reports
  *
@@ -36,17 +36,18 @@ INPUT_CALLBACK_DEFINE(NULL, on_input, NULL);
 
 int main(void)
 {
-	(void)wdt_init();
+	bool wdt_ok = wdt_init() == 0;
+
 	LOG_INF("motion_fw %s reset=%s%s%s", APP_VERSION_STRING,
 		wdt_reset_reason_name(wdt_reset_reason()),
 		(wdt_last_stalled_thread()[0] != '\0') ? " thread=" : "", wdt_last_stalled_thread());
 
-	if (motion_start() != 0) {
+	if (motion_start(wdt_ok) != 0) {
 		LOG_ERR("motion start failed");
 		return 0;
 	}
-	if (canlink_init() == 0) {
-		(void)host_start();
+	if ((canlink_init() == 0) && (host_start() != 0)) {
+		LOG_ERR("host reports not started");
 	}
 	LOG_INF("READY state=OFF");
 	return 0;
