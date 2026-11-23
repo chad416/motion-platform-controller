@@ -49,6 +49,8 @@ jobs:
           key: zephyr-${{ hashFiles('motion-fw/west.yml') }}-v2
 
       - name: West workspace and SDK
+        env:
+          GH_API_TOKEN: ${{ github.token }}
         run: |
           source "$MOTION_VENV/bin/activate"
           cd "$MOTION_WS"
@@ -61,7 +63,10 @@ jobs:
           pip install -q -r zephyr/scripts/requirements-base.txt \
             -r zephyr/scripts/requirements-build-test.txt \
             -r zephyr/scripts/requirements-run-test.txt
-          ls -d ~/zephyr-sdk-* >/dev/null 2>&1 || west sdk install -t arm-zephyr-eabi
+          # the token only authenticates the release lookup: anonymous calls from a shared
+          # runner address run into the API rate limit when the cache has expired
+          ls -d ~/zephyr-sdk-* >/dev/null 2>&1 || \
+            west sdk install -t arm-zephyr-eabi --personal-access-token "$GH_API_TOKEN"
 
       - name: Generated files current (headers, DBC vectors, scenario CSVs)
         run: |
