@@ -54,7 +54,13 @@ jobs:
           cd "$MOTION_WS"
           [ -d .west ] || west init -l motion-fw
           west update -n -o=--depth=1
-          west packages pip --install
+          # Zephyr's base, build and test requirements only. `west packages pip --install`
+          # also pulls the compliance set, which this job never uses and which carries a
+          # dependency fetched from a third-party archive (the scheduled run of
+          # 2026-11-23 failed on that download).
+          pip install -q -r zephyr/scripts/requirements-base.txt \
+            -r zephyr/scripts/requirements-build-test.txt \
+            -r zephyr/scripts/requirements-run-test.txt
           ls -d ~/zephyr-sdk-* >/dev/null 2>&1 || west sdk install -t arm-zephyr-eabi
 
       - name: Generated files current (headers, DBC vectors, scenario CSVs)
